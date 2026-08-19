@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gti"
+version = "0.1.0"
+description = "Symmetric, multiplexed messaging (chat, file transfer) over a single Bluetooth Classic RFCOMM link."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Gogolian" }]
+keywords = ["bluetooth", "rfcomm", "messaging", "chat", "file-transfer", "multiplexing"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Communications",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# Real Bluetooth Classic RFCOMM radios (platform libraries).  The core library,
+# the in-memory loopback, and the whole test-suite need none of these.
+macos = ["pyobjc-core>=9.0; sys_platform=='darwin'"]
+linux = ["PyBluez>=0.23; sys_platform=='linux'"]
+dev = ["mypy>=1.0"]
+
+[project.scripts]
+gti = "gti.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Gogolian/gti"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gti = ["py.typed"]
