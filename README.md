@@ -109,6 +109,14 @@ and CLI are implemented and exercised over the in-memory loopback. The RFCOMM
 radio adapters are implemented but **not yet verified against real hardware**;
 that is the next milestone.
 
+## Known limitations
+
+- RFCOMM adapters are not yet verified on real paired devices.
+- No device discovery or pairing UX; pass a Bluetooth address explicitly.
+- One file at a time; concurrent multi-file transfers are not implemented.
+- No BLE/TCP adapters yet (the `open_connection` factory leaves the seam).
+- No authentication or encryption beyond Bluetooth pairing itself.
+
 ## License
 
 MIT. Fully open source — contributions and donations welcome.
