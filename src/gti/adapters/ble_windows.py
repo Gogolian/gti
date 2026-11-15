@@ -98,7 +98,7 @@ async def _run_peripheral(conn: Connection) -> None:
         GattCharacteristicProperties.WRITE
         | GattCharacteristicProperties.WRITE_WITHOUT_RESPONSE
     )
-    rx_params.write_protection_level = GattProtectionLevel.PLAIN_TEXT
+    rx_params.write_protection_level = GattProtectionLevel.PLAIN
     rx_result = await provider.create_gatt_local_characteristic_async(rx_uuid, rx_params)
     if rx_result.error != 0:
         _send_control(conn, type="error", message=f"RX characteristic error {rx_result.error}")
@@ -107,7 +107,7 @@ async def _run_peripheral(conn: Connection) -> None:
 
     tx_params = GattLocalCharacteristicParameters()
     tx_params.characteristic_properties = GattCharacteristicProperties.NOTIFY
-    tx_params.read_protection_level = GattProtectionLevel.PLAIN_TEXT
+    tx_params.read_protection_level = GattProtectionLevel.PLAIN
     tx_result = await provider.create_gatt_local_characteristic_async(tx_uuid, tx_params)
     if tx_result.error != 0:
         _send_control(conn, type="error", message=f"TX characteristic error {tx_result.error}")
