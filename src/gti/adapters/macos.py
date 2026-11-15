@@ -44,7 +44,7 @@ _PUBLIC_BROWSE_GROUP_BYTES = bytes.fromhex("1002")
 def _sdp_dictionary(requested_channel: int) -> dict:
     """SDP record for the gti RFCOMM service."""
     return {
-        "0001 - ServiceClassIDList": [_SPP_UUID_BYTES, _GTI_UUID_BYTES],
+        "0001 - ServiceClassIDList": [_SPP_UUID_BYTES],
         "0004 - ProtocolDescriptorList": [
             [_L2CAP_UUID_BYTES],
             [
@@ -154,6 +154,13 @@ def _host_process(conn: Connection, requested_channel: int) -> None:
     import objc
     from Foundation import NSDate, NSObject, NSRunLoop
 
+    try:
+        from AppKit import NSApplication  # type: ignore
+
+        NSApplication.sharedApplication()
+    except Exception:
+        pass
+
     def _send_control(**payload: Any) -> None:
         conn.send_bytes(b"C" + json.dumps(payload).encode())
 
@@ -210,8 +217,8 @@ def _host_process(conn: Connection, requested_channel: int) -> None:
             .registerForChannelOpenNotifications_selector_withChannelID_direction_(
                 delegate,
                 b"rfcommChannelOpened:channel:",
-                0,  # any channel; SDP advertises the actual one
-                0,  # kIOBluetoothUserNotificationChannelDirectionAny
+                channel_id,
+                1,  # kIOBluetoothUserNotificationChannelDirectionIncoming
             )
         )
         if notification is None:
@@ -490,18 +497,31 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
         # the user having to pass --channel.
         channel_id = self._channel_id
         found_sdp = False
+        record = None
+        # Find the gti record by service name.  Querying by the generic SPP
+        # UUID can return an unrelated built-in service (e.g. "COM5").
         try:
-            uuid = ns["IOBluetoothSDPUUID"].alloc().initWithBytes_length_(
-                _GTI_UUID_BYTES, len(_GTI_UUID_BYTES)
-            )
-            record = device.getServiceRecordForUUID_(uuid)
-            if record is not None:
-                match = re.search(r"RFCOMM ChannelID:\s*(\d+)", str(record))
-                if match is not None:
-                    channel_id = int(match.group(1))
-                    found_sdp = True
+            for candidate in device.getServices() or []:
+                if "ServiceName: gti" in str(candidate):
+                    record = candidate
+                    break
         except Exception:
             pass
+        if record is None:
+            try:
+                uuid = ns["IOBluetoothSDPUUID"].alloc().initWithBytes_length_(
+                    _SPP_UUID_BYTES, len(_SPP_UUID_BYTES)
+                )
+                candidate = device.getServiceRecordForUUID_(uuid)
+                if candidate is not None and "ServiceName: gti" in str(candidate):
+                    record = candidate
+            except Exception:
+                pass
+        if record is not None:
+            match = re.search(r"RFCOMM ChannelID:\s*(\d+)", str(record))
+            if match is not None:
+                channel_id = int(match.group(1))
+                found_sdp = True
 
         if self._require_sdp and not found_sdp:
             raise OSError(
