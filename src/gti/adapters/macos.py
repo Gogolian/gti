@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import struct
 import sys
 import threading
@@ -27,8 +28,10 @@ logger = logging.getLogger(__name__)
 _FRAME_LEN = struct.Struct(">I")
 _INCOMING = 1  # kIOBluetoothUserNotificationChannelDirectionIncoming
 
-# Raw SDP data-element encodings for the Serial Port Profile.
-_SPP_UUID_BYTES = bytes.fromhex("0000110100001000800000805f9b34fb")
+# Raw SDP data-element encodings.  gti advertises its own service UUID so a
+# client can find the gti record even when the peer also exposes other SPP
+# services (macOS often has a built-in "COM5" SPP record).
+_GTI_UUID_BYTES = bytes.fromhex("e6031152a17a4f769aa5cba1b4321dcf")
 _L2CAP_UUID_BYTES = bytes.fromhex("0100")
 _RFCOMM_UUID_BYTES = bytes.fromhex("0003")
 _PUBLIC_BROWSE_GROUP_BYTES = bytes.fromhex("1002")
@@ -143,7 +146,7 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
         # Values use the IOBluetoothSDPDataElement dictionary/bytes format:
         # UUIDs and protocol identifiers are raw SDP data-element bytes.
         return {
-            "0001 - ServiceClassIDList": [_SPP_UUID_BYTES],
+            "0001 - ServiceClassIDList": [_GTI_UUID_BYTES],
             "0004 - ProtocolDescriptorList": [
                 [_L2CAP_UUID_BYTES],
                 [
@@ -165,15 +168,25 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
         )
         if record is None:
             return
-        ret, ch_id = record.getRFCOMMChannelID_(None)
-        if ret != 0 or not ch_id:
+
+        # pyobjc does not expose the out-parameter of getRFCOMMChannelID: as a
+        # tuple on all macOS versions, so read the assigned channel from the
+        # record description (and fall back to the protocol descriptor).
+        channel = self._requested_channel
+        match = re.search(r"RFCOMM ChannelID:\s*(\d+)", str(record))
+        if match is not None:
+            channel = int(match.group(1))
+        else:
             try:
-                record.removeServiceRecord()
+                descriptor = str(record.getAttributeDataElement_(4))
+                numbers = re.findall(r"uint32\((\d+)\)", descriptor)
+                if numbers:
+                    channel = int(numbers[-1])
             except Exception:
                 pass
-            return
+
         self._sdp_record = record
-        self._channel_id = int(ch_id)
+        self._channel_id = channel
         if self._channel_id != self._requested_channel:
             logger.warning(
                 "macOS assigned RFCOMM channel %d (requested %d); "
@@ -307,11 +320,14 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
 class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
     """Consumer-side RFCOMM connection on macOS."""
 
-    def __init__(self, address: str, channel: int = 1) -> None:
+    def __init__(
+        self, address: str, channel: int = 1, require_sdp: bool = False
+    ) -> None:
         super().__init__()
         _require_macos()
         self._address = address
         self._channel_id = channel
+        self._require_sdp = require_sdp
         self._rfcomm_channel: Any = None
 
     @property
@@ -342,17 +358,42 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
                 "(is it paired and in range?)"
             )
 
+        # Prefer the channel advertised by the peer's SDP record.  This lets
+        # us connect to a macOS listener that published an SPP record without
+        # the user having to pass --channel.
+        channel_id = self._channel_id
+        found_sdp = False
+        try:
+            uuid = ns["IOBluetoothSDPUUID"].alloc().initWithBytes_length_(
+                _GTI_UUID_BYTES, len(_GTI_UUID_BYTES)
+            )
+            record = device.getServiceRecordForUUID_(uuid)
+            if record is not None:
+                match = re.search(r"RFCOMM ChannelID:\s*(\d+)", str(record))
+                if match is not None:
+                    channel_id = int(match.group(1))
+                    found_sdp = True
+        except Exception:
+            pass
+
+        if self._require_sdp and not found_sdp:
+            raise OSError(
+                f"no gti SPP service found on {self._address}; is the listener "
+                "running?  (or pass --channel N to force a channel)"
+            )
+
         ret, channel = await loop.run_in_executor(
             None,
             lambda: device.openRFCOMMChannelSync_withChannelID_delegate_(
-                None, self._channel_id, delegate
+                None, channel_id, delegate
             ),
         )
         if ret != 0 or channel is None:
             raise OSError(
-                f"failed to open RFCOMM channel {self._channel_id} on "
+                f"failed to open RFCOMM channel {channel_id} on "
                 f"{self._address}: IOBluetooth error 0x{ret:08x}"
             )
+        self._channel_id = channel_id
 
         self._rfcomm_channel = channel
         self._reader = rx_reader

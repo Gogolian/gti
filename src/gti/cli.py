@@ -3,7 +3,9 @@
 Usage::
 
     gti demo                # loopback chat + file demo (no hardware needed)
+    gti scan                # list paired/nearby Bluetooth devices
     gti chat                # listen for an incoming RFCOMM connection
+    gti chat --scan         # scan, pick a peer, and connect
     gti chat --address ADDR # connect to a peer over RFCOMM
 
 ``chat`` is a unified session: both peers can send chat messages and files
@@ -163,20 +165,64 @@ async def _run_session(
                     break
 
 
+async def _run_scan(timeout: float) -> None:
+    """List paired and nearby Bluetooth Classic devices."""
+    from .discovery import discover, format_devices
+
+    devices = await discover(timeout)
+    if not devices:
+        print(
+            "No Bluetooth devices found.  Check that Bluetooth is on, the "
+            "devices are paired, and the listener is discoverable."
+        )
+        return
+    print("Bluetooth devices:")
+    for line in format_devices(devices):
+        print(line)
+
+
 async def _run_chat(
     address: Optional[str],
     *,
     channel: Optional[int] = None,
     receive_dir: Optional[Path] = None,
+    scan: bool = False,
+    scan_timeout: float = 8.0,
 ) -> None:
     """Open an RFCOMM connection (dial or listen) and run the unified session."""
     from .adapters import open_connection
+    from .address import normalize_address
+
+    if scan:
+        from .discovery import discover, pick_device
+
+        print(f"Scanning for Bluetooth devices ({scan_timeout:.0f}s) …", flush=True)
+        devices = await discover(scan_timeout)
+        loop = asyncio.get_running_loop()
+        chosen = await loop.run_in_executor(
+            None, lambda: pick_device(devices)
+        )
+        if chosen is None:
+            print("gti: no device selected", file=sys.stderr)
+            return
+        address = chosen.address
+        print(f"Selected {chosen.name} ({chosen.address})", flush=True)
+    elif address:
+        try:
+            address = normalize_address(address)
+        except ValueError as exc:
+            print(f"gti: {exc}", file=sys.stderr)
+            return
 
     kwargs = {}
     if channel is not None:
         kwargs["channel"] = channel
 
     if address:
+        # On macOS, require an SDP record unless the user forced a channel;
+        # this avoids opening a non-existent channel (which can crash
+        # IOBluetooth on recent macOS releases).
+        kwargs["require_sdp"] = channel is None
         transport = open_connection("rfcomm_connect", address=address, **kwargs)
         print(f"Connecting to {address} …", flush=True)
         role = "client"
@@ -201,10 +247,27 @@ def _build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("demo", help="run a loopback chat + file demo (no hardware needed)")
 
+    scan = sub.add_parser("scan", help="list paired/nearby Bluetooth devices")
+    scan.add_argument(
+        "--timeout", type=float, default=8.0, help="scan duration in seconds"
+    )
+
     chat = sub.add_parser("chat", help="interactive chat + file session over RFCOMM")
-    chat.add_argument(
+    group = chat.add_mutually_exclusive_group()
+    group.add_argument(
         "--address",
         help="peer Bluetooth address (omit to wait for an incoming connection)",
+    )
+    group.add_argument(
+        "--scan",
+        action="store_true",
+        help="scan for devices, pick one interactively, and connect",
+    )
+    chat.add_argument(
+        "--timeout",
+        type=float,
+        default=8.0,
+        help="scan duration in seconds when --scan is used",
     )
     chat.add_argument(
         "--channel",
@@ -231,6 +294,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         asyncio.run(_run_demo())
         return 0
 
+    if args.command == "scan":
+        try:
+            asyncio.run(_run_scan(args.timeout))
+        except (ImportError, OSError, RuntimeError) as exc:
+            print(f"gti: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
     if args.command == "chat":
         try:
             asyncio.run(
@@ -238,6 +309,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     args.address,
                     channel=args.channel,
                     receive_dir=args.receive_dir,
+                    scan=args.scan,
+                    scan_timeout=args.timeout,
                 )
             )
         except (ImportError, OSError, RuntimeError) as exc:

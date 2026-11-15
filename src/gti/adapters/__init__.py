@@ -32,6 +32,9 @@ def open_connection(kind: str = "rfcomm_listen", **kw: Any) -> Transport:
             f"unknown connection kind {kind!r}; valid kinds: {sorted(_KINDS)}"
         )
 
+    if sys.platform != "darwin":
+        kw.pop("require_sdp", None)
+
     if sys.platform == "linux":
         from .linux import LinuxRFCOMMHostTransport, LinuxRFCOMMConsumerTransport
         if kind == "rfcomm_listen":
