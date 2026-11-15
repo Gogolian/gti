@@ -23,7 +23,7 @@ InputFn = Callable[[str], str]
 PrintFn = Callable[..., object]
 
 _BLUETOOTHCTL_DEVICE = re.compile(
-    r"^Device\s+([0-9A-Fa-f:]{17})\s+(.*)$"
+    r"^Device\s+([0-9A-Fa-f:-]{17})\s+(.*)$"
 )
 
 

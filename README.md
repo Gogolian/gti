@@ -41,7 +41,9 @@ packages. Bluetooth Classic RFCOMM requires the two devices to be paired first.
 
 ```bash
 gti demo                 # loopback chat + file demo, no hardware needed
+gti scan                 # list paired/nearby Bluetooth devices
 gti chat                 # wait for an incoming RFCOMM connection
+gti chat --scan          # scan, pick a peer, and connect
 gti chat --address XX:XX:XX:XX:XX:XX   # dial a peer
 ```
 
@@ -58,9 +60,10 @@ Both peers must run the same command: one side with `--address`, the other
 without. Use `--channel N` to override the RFCOMM channel/port (default 1).
 Bluetooth Classic RFCOMM requires the two devices to be paired first.
 
-On macOS, SDP service publishing is unavailable on some releases (Ventura and
-later). The listener then falls back to a fixed RFCOMM channel (default 1) and
-prints the channel it is using; pass the same `--channel N` on the dialler.
+On macOS, the listener publishes a gti-specific SDP record so `gti chat --scan`
+can find it automatically. If SDP publishing is unavailable, the listener falls
+back to a fixed RFCOMM channel (default 1) and prints the channel it is using;
+pass the same `--channel N` on the dialler.
 
 ## Library use
 
@@ -116,8 +119,10 @@ that is the next milestone.
 ## Known limitations
 
 - RFCOMM adapters are not yet verified on real paired devices.
-- macOS SDP publishing may be unavailable (Ventura+); the listener falls back
-  to a fixed RFCOMM channel, so the dialler may need an explicit `--channel`.
+- macOS SDP publishing may be unavailable; the listener falls back to a fixed
+  RFCOMM channel, so the dialler may need an explicit `--channel`.
+- `gti scan` lists paired devices on macOS and known devices via `bluetoothctl`
+  on Linux; Windows discovery is not implemented yet.
 - No device discovery or pairing UX; pass a Bluetooth address explicitly.
 - One file at a time; concurrent multi-file transfers are not implemented.
 - No BLE/TCP adapters yet (the `open_connection` factory leaves the seam).
