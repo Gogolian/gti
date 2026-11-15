@@ -42,6 +42,14 @@ def _require_macos() -> None:
         )
 
 
+def _require_bluetooth_on(ns: dict) -> None:
+    controller = ns["IOBluetoothHostController"].defaultController()
+    if controller is None or controller.powerState() == 0:
+        raise OSError(
+            "Bluetooth is off; turn it on in System Settings > Bluetooth"
+        )
+
+
 def _load_iobluetooth() -> dict:
     try:
         import objc  # type: ignore
@@ -179,6 +187,7 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
         if self._closed:
             raise TransportClosed("macOS RFCOMM host is closed")
         ns = _load_iobluetooth()
+        _require_bluetooth_on(ns)
         IOBluetoothSDPServiceRecord = ns["IOBluetoothSDPServiceRecord"]
         IOBluetoothRFCOMMChannel = ns["IOBluetoothRFCOMMChannel"]
 
@@ -316,6 +325,7 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
 
     async def start(self) -> None:
         ns = _load_iobluetooth()
+        _require_bluetooth_on(ns)
         IOBluetoothDevice = ns["IOBluetoothDevice"]
         loop = asyncio.get_running_loop()
         rx_reader: asyncio.StreamReader = asyncio.StreamReader()
