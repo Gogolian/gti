@@ -47,8 +47,14 @@ class WindowsRFCOMMHostTransport(RFCOMMStreamTransport):
         srv = socket.socket(_AF_BTH, socket.SOCK_STREAM, _BTHPROTO_RFCOMM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         srv.setblocking(False)
-        srv.bind((_BDADDR_ANY, self._channel))
-        srv.listen(1)
+        try:
+            srv.bind((_BDADDR_ANY, self._channel))
+            srv.listen(1)
+        except OSError as exc:
+            srv.close()
+            raise OSError(
+                f"failed to listen on RFCOMM channel {self._channel}: {exc}"
+            ) from exc
         self._srv_sock = srv
         try:
             conn, _addr = await loop.sock_accept(srv)
@@ -95,8 +101,14 @@ class WindowsRFCOMMConsumerTransport(RFCOMMStreamTransport):
         try:
             await loop.sock_connect(sock, (self._address, self._channel))
             reader, writer = await asyncio.open_connection(sock=sock)
-        except BaseException:
+        except asyncio.CancelledError:
             sock.close()
             raise
+        except Exception as exc:
+            sock.close()
+            raise OSError(
+                f"failed to connect to {self._address} on RFCOMM channel "
+                f"{self._channel}: {exc}"
+            ) from exc
         self._attach(reader, writer)
         self._start_recv()

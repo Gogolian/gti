@@ -337,7 +337,10 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
 
         device = IOBluetoothDevice.deviceWithAddressString_(self._address)
         if device is None:
-            raise OSError(f"Bluetooth device not found: {self._address!r}")
+            raise OSError(
+                f"Bluetooth device not found: {self._address!r} "
+                "(is it paired and in range?)"
+            )
 
         ret, channel = await loop.run_in_executor(
             None,
@@ -346,7 +349,10 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
             ),
         )
         if ret != 0 or channel is None:
-            raise OSError(f"openRFCOMMChannelSync failed (ret=0x{ret:08x})")
+            raise OSError(
+                f"failed to open RFCOMM channel {self._channel_id} on "
+                f"{self._address}: IOBluetooth error 0x{ret:08x}"
+            )
 
         self._rfcomm_channel = channel
         self._reader = rx_reader
