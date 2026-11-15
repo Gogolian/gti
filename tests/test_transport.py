@@ -133,3 +133,40 @@ class TestOpenConnectionFactory(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCloseNotification(unittest.IsolatedAsyncioTestCase):
+    async def test_close_callback_called_once(self) -> None:
+        a, b = create_loopback()
+        calls: list[str] = []
+
+        async def on_close() -> None:
+            calls.append("closed")
+
+        a.on_close(on_close)
+        await a.start()
+        await a.close()
+        await a.close()
+        self.assertEqual(calls, ["closed"])
+
+    async def test_closing_one_end_notifies_the_other(self) -> None:
+        a, b = create_loopback()
+        calls: list[str] = []
+
+        async def on_close() -> None:
+            calls.append("b-closed")
+
+        b.on_close(on_close)
+        await a.start()
+        await b.start()
+        await a.close()
+        self.assertEqual(calls, ["b-closed"])
+        self.assertTrue(b.is_closed)
+
+    async def test_send_to_closed_peer_raises(self) -> None:
+        a, b = create_loopback()
+        await a.start()
+        await b.start()
+        await b.close()
+        with self.assertRaises(TransportClosed):
+            await a.send(b"nope")

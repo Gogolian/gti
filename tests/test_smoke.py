@@ -9,7 +9,7 @@ import gti
 
 class SmokeTest(unittest.TestCase):
     def test_version(self) -> None:
-        self.assertEqual(gti.__version__, "0.1.0")
+        self.assertEqual(gti.__version__, "0.2.0")
 
 
 if __name__ == "__main__":

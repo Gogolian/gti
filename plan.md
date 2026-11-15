@@ -1,5 +1,9 @@
 # Plan: gti — symmetric multiplexed messaging over vendored RFCOMM
 
+> **Status (v0.2.0):** P0–P6 are implemented and green over the in-memory
+> loopback. Remaining work is real-hardware verification of the RFCOMM
+> adapters, plus the hardening items tracked in the README/CI.
+
 Bootstrap `gti` by **vendoring** keytalk's `Transport` + RFCOMM adapters (no runtime dependency), then building a **symmetric peer** that multiplexes independent services (chat, file, future screen-share) over **one connection**. Each request follows your flow: **REQUEST → ACK (in-progress / not-supported / error) → EVENT(s) with content**, correlated by `request_id` so replies can arrive out of order. v1 ships **simple chat** + **one-file-at-a-time transfer**, plus a CLI and loopback demo.
 
 Why this shape: keytalk's transport already gives us a frame-oriented byte pipe (one `send()` = one receive, big frames OK), but its protocol/host/consumer are LLM-specific and single-purpose — so gti keeps the transport and builds its own tiny service-multiplexing envelope on top.
@@ -25,10 +29,10 @@ Why this shape: keytalk's transport already gives us a frame-oriented byte pipe 
 6. `services/file_transfer.py`: REQUEST = JSON metadata `{name,size,sha256,chunk_size}`; responder ACKs accept/not-supported; sender streams the file as EVENT frames (`seq`=chunk index, raw bytes, last flagged END, bounded ~16 KiB so it **interleaves with chat**); receiver writes a temp file, verifies sha256 on END, returns completion EVENT{OK} or ERROR. *Verify: `test_file_transfer` — ack, chunk stream, checksum OK, wrong-checksum → ERROR, and chat-not-blocked-by-file.*
 
 ### P6 — CLI + demo *(depends on P4, P5)*
-7. `cli.py` (`gti listen` / `connect` / `chat` / `send-file`, argparse mirroring keytalk's `cli.py`) and `examples/demo.py` (two loopback peers exchanging a chat message + a file). *Verify: run demo; `gti --help`; interactive loopback chat.*
+7. `cli.py` (`gti demo` / `gti chat`, a unified interactive session with `/file PATH` and `/quit`) and `examples/demo.py` (two loopback peers exchanging a chat message + a file). *Verify: run demo; `gti --help`; interactive loopback chat.*
 
 ## Relevant files
-- `/Users/mac1/Desktop/code/gti/pyproject.toml` — mirror keytalk `pyproject.toml` (src layout, `py.typed`, MIT, no core deps, extras `macos=[pyobjc-core]`, `linux=[PyBluez]`).
+- `/Users/mac1/Desktop/code/gti/pyproject.toml` — mirror keytalk `pyproject.toml` (src layout, `py.typed`, MIT, no core deps, extras `macos=[pyobjc-framework-Cocoa]`; no Linux extra because Linux uses raw sockets).
 - `src/gti/transport.py` — vendor keytalk `transport.py` `Transport` ABC + `ble/l2cap/channel.py` framing base (renamed `StreamTransport`).
 - `src/gti/adapters/` — vendor `classic/channel.py`, `classic/loopback.py`, and `linux/macos/windows`; add `open_connection()` factory.
 - `src/gti/protocol.py` — new `Envelope`, referencing `Frame` in keytalk `protocol.py`.

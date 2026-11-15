@@ -45,9 +45,11 @@ class LinuxRFCOMMHostTransport(RFCOMMStreamTransport):
         srv.bind((_BDADDR_ANY, self._channel))
         srv.listen(1)
         self._srv_sock = srv
-        conn, _addr = await loop.sock_accept(srv)
-        srv.close()
-        self._srv_sock = None
+        try:
+            conn, _addr = await loop.sock_accept(srv)
+        finally:
+            srv.close()
+            self._srv_sock = None
         conn.setblocking(False)
         reader, writer = await asyncio.open_connection(sock=conn)
         self._attach(reader, writer)
@@ -76,7 +78,11 @@ class LinuxRFCOMMConsumerTransport(RFCOMMStreamTransport):
         loop = asyncio.get_running_loop()
         sock = socket.socket(_AF_BLUETOOTH, socket.SOCK_STREAM, _BTPROTO_RFCOMM)
         sock.setblocking(False)
-        await loop.sock_connect(sock, (self._address, self._channel))
-        reader, writer = await asyncio.open_connection(sock=sock)
+        try:
+            await loop.sock_connect(sock, (self._address, self._channel))
+            reader, writer = await asyncio.open_connection(sock=sock)
+        except BaseException:
+            sock.close()
+            raise
         self._attach(reader, writer)
         self._start_recv()

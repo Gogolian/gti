@@ -193,3 +193,62 @@ class TestTimeout(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestDisconnect(unittest.IsolatedAsyncioTestCase):
+    async def test_transport_close_fails_pending_call(self) -> None:
+        peer_a, peer_b = _make_peers()
+
+        async def never_acks(payload: bytes, ctx: RequestContext) -> None:
+            await asyncio.sleep(10)
+
+        peer_b.register(1, never_acks)
+
+        async with peer_a, peer_b:
+            call = await peer_a.open_call(1, b"")
+            await peer_a._transport.close()
+            with self.assertRaises(ConnectionError):
+                await call.wait_ack(timeout=1.0)
+
+    async def test_stop_fails_pending_call(self) -> None:
+        peer_a, peer_b = _make_peers()
+
+        async def never_acks(payload: bytes, ctx: RequestContext) -> None:
+            await asyncio.sleep(10)
+
+        peer_b.register(1, never_acks)
+
+        await peer_a.start()
+        await peer_b.start()
+        try:
+            call = await peer_a.open_call(1, b"")
+            await peer_a.stop()
+            with self.assertRaises(ConnectionError):
+                await call.wait_ack(timeout=1.0)
+        finally:
+            await peer_b.stop()
+
+    async def test_wait_closed_wakes_on_transport_close(self) -> None:
+        peer_a, peer_b = _make_peers()
+        async with peer_a, peer_b:
+            waiter = asyncio.create_task(peer_a.wait_closed())
+            await asyncio.sleep(0)
+            await peer_a._transport.close()
+            await asyncio.wait_for(waiter, timeout=1.0)
+            self.assertTrue(peer_a.is_closed)
+
+    async def test_open_call_after_close_raises(self) -> None:
+        peer_a, peer_b = _make_peers()
+        await peer_a.start()
+        await peer_b.start()
+        await peer_a.stop()
+        try:
+            with self.assertRaises(ConnectionError):
+                await peer_a.open_call(1, b"")
+        finally:
+            await peer_b.stop()
+
+    async def test_invalid_role_raises(self) -> None:
+        t_a, _t_b = create_loopback()
+        with self.assertRaises(ValueError):
+            Peer(t_a, role="peer")

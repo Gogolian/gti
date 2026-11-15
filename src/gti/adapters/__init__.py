@@ -41,6 +41,9 @@ def open_connection(kind: str = "rfcomm_listen", **kw: Any) -> Transport:
     if sys.platform == "darwin":
         from .macos import MacOSRFCOMMHostTransport, MacOSRFCOMMConsumerTransport
         if kind == "rfcomm_listen":
+            # The macOS host publishes an SDP record and gets a dynamic
+            # channel id, so a caller-supplied channel is not applicable.
+            kw.pop("channel", None)
             return MacOSRFCOMMHostTransport(**kw)
         return MacOSRFCOMMConsumerTransport(**kw)
 

@@ -5,7 +5,7 @@ through pyobjc.  A daemon thread runs an NSRunLoop for IOBluetooth callbacks;
 received bytes are fed into an ``asyncio.StreamReader`` via
 ``call_soon_threadsafe``; ``send()`` calls ``writeSync:length:`` in an executor.
 
-Requires: ``pyobjc-core`` (``pip install pyobjc-core``).
+Requires: ``pyobjc-framework-Cocoa`` (``pip install pyobjc-framework-Cocoa``).
 """
 
 from __future__ import annotations
@@ -35,10 +35,11 @@ def _require_macos() -> None:
 
 def _load_iobluetooth() -> dict:
     try:
-        import objc
+        import objc  # type: ignore
     except ImportError as exc:
         raise ImportError(
-            "pyobjc-core is required for macOS RFCOMM support (pip install pyobjc-core)"
+            "pyobjc-framework-Cocoa is required for macOS RFCOMM support "
+            "(pip install pyobjc-framework-Cocoa)"
         ) from exc
     ns: dict = {}
     objc.loadBundle(
@@ -58,7 +59,7 @@ def _get_delegate_class() -> Any:
         return _DelegateClass
 
     import objc
-    from Foundation import NSObject
+    from Foundation import NSObject  # type: ignore
 
     class _RFCOMMDelegate(NSObject):
         @objc.python_method
@@ -102,12 +103,15 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
         self._channel_id: int = 0
         self._rfcomm_channel: Any = None
         self._open_notification: Any = None
+        self._closed_event = asyncio.Event()
 
     @property
     def channel_id(self) -> int:
         return self._channel_id
 
     async def start(self) -> None:
+        if self._closed:
+            raise TransportClosed("macOS RFCOMM host is closed")
         ns = _load_iobluetooth()
         IOBluetoothSDPServiceRecord = ns["IOBluetoothSDPServiceRecord"]
         IOBluetoothRFCOMMChannel = ns["IOBluetoothRFCOMMChannel"]
@@ -163,7 +167,19 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
         await loop.run_in_executor(None, bt_ready.wait)
         if bt_error:
             raise OSError(bt_error[0])
-        await connected.wait()
+
+        connected_task = asyncio.create_task(connected.wait())
+        closed_task = asyncio.create_task(self._closed_event.wait())
+        try:
+            await asyncio.wait(
+                {connected_task, closed_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for task in (connected_task, closed_task):
+                task.cancel()
+        if self._closed:
+            raise TransportClosed("macOS RFCOMM host closed while waiting")
         self._rfcomm_channel = delegate._channel_ref
         self._reader = rx_reader
         self._start_recv()
@@ -178,16 +194,43 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
             lambda: self._rfcomm_channel.writeSync_length_(data, len(data)),
         )
 
+    async def close(self) -> None:
+        self._closed_event.set()
+        channel = self._rfcomm_channel
+        self._rfcomm_channel = None
+        if channel is not None:
+            try:
+                channel.closeChannel()
+            except Exception:
+                pass
+        notification = self._open_notification
+        self._open_notification = None
+        if notification is not None:
+            try:
+                notification.unregister()
+            except Exception:
+                pass
+        await super().close()
+
 
 class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
     """Consumer-side RFCOMM connection on macOS."""
 
-    def __init__(self, address: str, channel_id: int = 1) -> None:
+    def __init__(self, address: str, channel: int = 1) -> None:
         super().__init__()
         _require_macos()
         self._address = address
-        self._channel_id = channel_id
+        self._channel_id = channel
         self._rfcomm_channel: Any = None
+
+    @property
+    def channel(self) -> int:
+        return self._channel_id
+
+    @property
+    def channel_id(self) -> int:
+        """Alias for :attr:`channel` (IOBluetooth calls it a channel id)."""
+        return self._channel_id
 
     async def start(self) -> None:
         ns = _load_iobluetooth()
@@ -204,8 +247,11 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
         if device is None:
             raise OSError(f"Bluetooth device not found: {self._address!r}")
 
-        ret, channel = device.openRFCOMMChannelSync_withChannelID_delegate_(
-            None, self._channel_id, delegate
+        ret, channel = await loop.run_in_executor(
+            None,
+            lambda: device.openRFCOMMChannelSync_withChannelID_delegate_(
+                None, self._channel_id, delegate
+            ),
         )
         if ret != 0 or channel is None:
             raise OSError(f"openRFCOMMChannelSync failed (ret=0x{ret:08x})")
@@ -223,3 +269,13 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
             None,
             lambda: self._rfcomm_channel.writeSync_length_(data, len(data)),
         )
+
+    async def close(self) -> None:
+        channel = self._rfcomm_channel
+        self._rfcomm_channel = None
+        if channel is not None:
+            try:
+                channel.closeChannel()
+            except Exception:
+                pass
+        await super().close()

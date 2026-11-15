@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gti"
-version = "0.1.0"
+version = "0.2.0"
 description = "Symmetric, multiplexed messaging (chat, file transfer) over a single Bluetooth Classic RFCOMM link."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -22,8 +22,8 @@ dependencies = []
 [project.optional-dependencies]
 # Real Bluetooth Classic RFCOMM radios (platform libraries).  The core library,
 # the in-memory loopback, and the whole test-suite need none of these.
-macos = ["pyobjc-core>=9.0; sys_platform=='darwin'"]
-linux = ["PyBluez>=0.23; sys_platform=='linux'"]
+# macOS drives IOBluetooth through pyobjc; Foundation/NSObject come from Cocoa.
+macos = ["pyobjc-framework-Cocoa>=9.0; sys_platform=='darwin'"]
 dev = ["mypy>=1.0"]
 
 [project.scripts]
@@ -37,3 +37,13 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 gti = ["py.typed"]
+
+[tool.mypy]
+python_version = "3.9"
+warn_unused_configs = true
+disallow_untyped_defs = true
+check_untyped_defs = true
+no_implicit_optional = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+show_error_codes = true

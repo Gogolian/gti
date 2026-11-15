@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from gti.adapters.loopback import create_rfcomm_loopback
-from gti.cli import PrintFn, _run_session, _save_received_file
+from gti.cli import PrintFn, _run_session, main
 from gti.peer import Peer
 from gti.services.chat import ChatService
 from gti.services.file_transfer import FileTransferService
@@ -34,25 +34,11 @@ def _capture(out: list) -> "PrintFn":
     return print_fn
 
 
-class TestSaveReceivedFile(unittest.TestCase):
-    def test_never_overwrites(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            directory = Path(d)
-            p1 = _save_received_file("notes.txt", b"one", directory)
-            p2 = _save_received_file("notes.txt", b"two", directory)
-            p3 = _save_received_file("notes.txt", b"three", directory)
-            self.assertEqual([p1.name, p2.name, p3.name],
-                             ["notes.txt", "notes.1.txt", "notes.2.txt"])
-            self.assertEqual(p1.read_bytes(), b"one")
-            self.assertEqual(p2.read_bytes(), b"two")
-            self.assertEqual(p3.read_bytes(), b"three")
-
-    def test_strips_path_components(self) -> None:
-        with tempfile.TemporaryDirectory() as d:
-            directory = Path(d)
-            p = _save_received_file("../../etc/passwd", b"x", directory)
-            self.assertEqual(p.parent, directory)
-            self.assertEqual(p.name, "passwd")
+class TestParser(unittest.TestCase):
+    def test_version(self) -> None:
+        with self.assertRaises(SystemExit) as cm:
+            main(["--version"])
+        self.assertEqual(cm.exception.code, 0)
 
 
 class TestSession(unittest.IsolatedAsyncioTestCase):
@@ -60,16 +46,22 @@ class TestSession(unittest.IsolatedAsyncioTestCase):
         t_client, t_server = await create_rfcomm_loopback()
 
         peer_msgs: list[str] = []
-        peer_dir = Path(tempfile.mkdtemp())
+        received_files: list[Path] = []
+        peer_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(peer_tmp.cleanup)
+        peer_dir = Path(peer_tmp.name)
 
-        hello = Path(tempfile.mkdtemp()) / "hello.txt"
+        hello_tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(hello_tmp.cleanup)
+        hello = Path(hello_tmp.name) / "hello.txt"
         hello.write_bytes(b"file payload " * 100)
 
         out: list[str] = []
 
         chat = ChatService(on_message=peer_msgs.append)
         files = FileTransferService(
-            on_file=lambda name, data: (peer_dir / name).write_bytes(data)
+            on_file=lambda _n, p: received_files.append(p),
+            receive_dir=peer_dir,
         )
         peer = Peer(t_server, role="server")
         peer.register(1, chat.handle)
@@ -96,15 +88,14 @@ class TestSession(unittest.IsolatedAsyncioTestCase):
         await asyncio.gather(peer_side())
 
         self.assertEqual(peer_msgs, ["hi there"])
-        received = list(peer_dir.glob("hello*.txt"))
-        self.assertEqual(len(received), 1)
-        self.assertEqual(received[0].read_bytes(), hello.read_bytes())
+        self.assertEqual(len(received_files), 1)
+        self.assertEqual(received_files[0].read_bytes(), hello.read_bytes())
         transcript = "\n".join(out)
         self.assertIn("hello from the peer", transcript)
         self.assertIn(f"sent file {hello}", transcript)
 
     async def test_unknown_command(self) -> None:
-        t_client, _t_server = await create_rfcomm_loopback()
+        t_client, t_server = await create_rfcomm_loopback()
         out: list[str] = []
         await _run_session(
             t_client,
@@ -112,10 +103,11 @@ class TestSession(unittest.IsolatedAsyncioTestCase):
             input_fn=_scripted_input("/nope"),
             print_fn=_capture(out),
         )
+        await t_server.close()
         self.assertTrue(any("unknown command" in line for line in out))
 
     async def test_missing_file(self) -> None:
-        t_client, _t_server = await create_rfcomm_loopback()
+        t_client, t_server = await create_rfcomm_loopback()
         out: list[str] = []
         await _run_session(
             t_client,
@@ -123,7 +115,34 @@ class TestSession(unittest.IsolatedAsyncioTestCase):
             input_fn=_scripted_input("/file /no/such/file.bin"),
             print_fn=_capture(out),
         )
+        await t_server.close()
         self.assertTrue(any("no such file" in line for line in out))
+
+    async def test_peer_disconnect_is_reported(self) -> None:
+        import threading
+
+        t_client, t_server = await create_rfcomm_loopback()
+        out: list[str] = []
+        closed = threading.Event()
+
+        def blocking_input(_prompt: str) -> str:
+            closed.wait(timeout=2)
+            return ""
+
+        async def close_peer() -> None:
+            await asyncio.sleep(0.05)
+            await t_server.close()
+            closed.set()
+
+        closer = asyncio.create_task(close_peer())
+        await _run_session(
+            t_client,
+            role="client",
+            input_fn=blocking_input,
+            print_fn=_capture(out),
+        )
+        await closer
+        self.assertTrue(any("peer disconnected" in line for line in out))
 
 
 if __name__ == "__main__":

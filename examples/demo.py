@@ -29,30 +29,36 @@ async def main() -> None:
     chat_a = ChatService(on_message=lambda m: msgs_a.append(m))
     chat_b = ChatService(on_message=lambda m: msgs_b.append(m))
     file_a = FileTransferService()
-    file_b = FileTransferService(on_file=lambda n, d: files_b.append((n, len(d))))
 
     peer_a.register(1, chat_a.handle)
     peer_a.register(2, file_a.handle)
     peer_b.register(1, chat_b.handle)
-    peer_b.register(2, file_b.handle)
 
     # Create a test file (~3 chunks worth of data).
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".bin")
     tmp.write(os.urandom(3 * DEFAULT_CHUNK_SIZE + 512))
     tmp.close()
 
-    try:
-        async with peer_a, peer_b:
-            # Chat in both directions.
-            await chat_a.send("Hello from A!", peer_a)
-            await chat_b.send("Hello from B!", peer_b)
+    with tempfile.TemporaryDirectory() as receive_dir:
+        file_b = FileTransferService(
+            on_file=lambda n, p: files_b.append((n, p.stat().st_size)),
+            receive_dir=receive_dir,
+        )
+        peer_b.register(2, file_b.handle)
+        try:
+            async with peer_a, peer_b:
+                # Chat in both directions.
+                await chat_a.send("Hello from A!", peer_a)
+                await chat_b.send("Hello from B!", peer_b)
 
-            # File transfer and a concurrent chat message.
-            file_task = asyncio.create_task(file_a.send(tmp.name, peer_a))
-            chat_task = asyncio.create_task(chat_a.send("Mid-transfer message", peer_a))
-            await asyncio.gather(file_task, chat_task)
-    finally:
-        os.unlink(tmp.name)
+                # File transfer and a concurrent chat message.
+                file_task = asyncio.create_task(file_a.send(tmp.name, peer_a))
+                chat_task = asyncio.create_task(
+                    chat_a.send("Mid-transfer message", peer_a)
+                )
+                await asyncio.gather(file_task, chat_task)
+        finally:
+            os.unlink(tmp.name)
 
     print("=== Demo results ===")
     print(f"A received messages : {msgs_a}")
