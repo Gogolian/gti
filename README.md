@@ -42,10 +42,14 @@ packages. Bluetooth Classic RFCOMM requires the two devices to be paired first.
 ```bash
 gti demo                 # loopback chat + file demo, no hardware needed
 gti scan                 # list paired/nearby Bluetooth devices
-gti chat                 # wait for an incoming RFCOMM connection
+gti chat                 # pick a transport, then wait for a connection
 gti chat --scan          # scan, pick a peer, and connect
+gti chat --transport ble # use BLE instead of RFCOMM
 gti chat --address XX:XX:XX:XX:XX:XX   # dial a peer
 ```
+
+When `--transport` is omitted, `gti chat` and `gti scan` prompt for
+**RFCOMM** or **BLE**.
 
 Inside a `chat` session, both ends are symmetric:
 
@@ -60,10 +64,15 @@ Both peers must run the same command: one side with `--address`, the other
 without. Use `--channel N` to override the RFCOMM channel/port (default 1).
 Bluetooth Classic RFCOMM requires the two devices to be paired first.
 
-On macOS, the listener publishes a gti-specific SDP record so `gti chat --scan`
-can find it automatically. If SDP publishing is unavailable, the listener falls
-back to a fixed RFCOMM channel (default 1) and prints the channel it is using;
-pass the same `--channel N` on the dialler.
+On macOS, the RFCOMM listener publishes a gti-specific SDP record so
+`gti chat --scan` can find it automatically. If SDP publishing is unavailable,
+the listener falls back to a fixed RFCOMM channel (default 1) and prints the
+channel it is using; pass the same `--channel N` on the dialler.
+
+The BLE transport is currently implemented on macOS. It uses a GATT service
+with a write characteristic (central → peripheral) and a notify characteristic
+(peripheral → central), and fragments frames into BLE-sized packets. BLE is
+slower than RFCOMM for file transfer; chat is unaffected.
 
 ## Library use
 
@@ -123,6 +132,9 @@ that is the next milestone.
   RFCOMM channel, so the dialler may need an explicit `--channel`.
 - `gti scan` lists paired devices on macOS and known devices via `bluetoothctl`
   on Linux; Windows discovery is not implemented yet.
+- BLE transport is macOS-only for now; Windows/Linux BLE adapters are future work.
+- BLE file transfer is slower than RFCOMM (typically 2–10×, depending on PHY,
+  MTU, and connection interval).
 - No device discovery or pairing UX; pass a Bluetooth address explicitly.
 - One file at a time; concurrent multi-file transfers are not implemented.
 - No BLE/TCP adapters yet (the `open_connection` factory leaves the seam).

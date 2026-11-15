@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from gti.adapters.loopback import create_rfcomm_loopback
-from gti.cli import PrintFn, _run_session, main
+from gti.cli import PrintFn, _choose_transport, _run_session, main
 from gti.peer import Peer
 from gti.services.chat import ChatService
 from gti.services.file_transfer import FileTransferService
@@ -39,6 +39,30 @@ class TestParser(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm:
             main(["--version"])
         self.assertEqual(cm.exception.code, 0)
+
+
+class TestTransportPicker(unittest.IsolatedAsyncioTestCase):
+    async def test_explicit(self) -> None:
+        self.assertEqual(await _choose_transport("ble"), "ble")
+        self.assertEqual(await _choose_transport("rfcomm"), "rfcomm")
+
+    async def test_prompt_ble(self) -> None:
+        out: list[str] = []
+        kind = await _choose_transport(
+            None,
+            input_fn=_scripted_input("2"),
+            print_fn=_capture(out),
+        )
+        self.assertEqual(kind, "ble")
+        self.assertTrue(any("Bluetooth Low Energy" in line for line in out))
+
+    async def test_prompt_default_rfcomm(self) -> None:
+        kind = await _choose_transport(
+            None,
+            input_fn=_scripted_input(""),
+            print_fn=_capture([]),
+        )
+        self.assertEqual(kind, "rfcomm")
 
 
 class TestSession(unittest.IsolatedAsyncioTestCase):

@@ -165,11 +165,46 @@ async def _run_session(
                     break
 
 
-async def _run_scan(timeout: float) -> None:
-    """List paired and nearby Bluetooth Classic devices."""
-    from .discovery import discover, format_devices
+async def _choose_transport(
+    transport: Optional[str],
+    *,
+    input_fn: InputFn = input,
+    print_fn: PrintFn = print,
+) -> str:
+    """Return ``"rfcomm"`` or ``"ble"``, prompting when not specified."""
+    if transport in ("rfcomm", "ble"):
+        return transport
+    print_fn("Select transport:")
+    print_fn("  1. Bluetooth Classic (RFCOMM)")
+    print_fn("  2. Bluetooth Low Energy (BLE)")
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            raw = (
+                await loop.run_in_executor(None, input_fn, "Transport [1]: ")
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return "rfcomm"
+        if raw in ("", "1", "rfcomm", "classic"):
+            return "rfcomm"
+        if raw in ("2", "ble", "low-energy", "lowenergy"):
+            return "ble"
+        print_fn("gti: choose 1 (RFCOMM) or 2 (BLE)")
 
-    devices = await discover(timeout)
+
+async def _run_scan(timeout: float, transport: Optional[str] = None) -> None:
+    """List paired/nearby devices for the selected transport."""
+    from .discovery import format_devices
+
+    kind = await _choose_transport(transport)
+    if kind == "ble":
+        from .adapters.ble import discover_ble
+
+        devices = await discover_ble(timeout)
+    else:
+        from .discovery import discover
+
+        devices = await discover(timeout)
     if not devices:
         print(
             "No Bluetooth devices found.  Check that Bluetooth is on, the "
@@ -188,17 +223,48 @@ async def _run_chat(
     receive_dir: Optional[Path] = None,
     scan: bool = False,
     scan_timeout: float = 8.0,
+    transport: Optional[str] = None,
 ) -> None:
-    """Open an RFCOMM connection (dial or listen) and run the unified session."""
-    from .adapters import open_connection
+    """Open a connection (dial or listen) and run the unified session."""
     from .address import normalize_address
+    from .discovery import pick_device
+
+    kind = await _choose_transport(transport)
+    loop = asyncio.get_running_loop()
+    transport_obj: Transport
+
+    if kind == "ble":
+        from .adapters.ble import BLETransport, discover_ble
+
+        if scan:
+            print(f"Scanning for BLE devices ({scan_timeout:.0f}s) …", flush=True)
+            devices = await discover_ble(scan_timeout)
+            chosen = await loop.run_in_executor(
+                None, lambda: pick_device(devices)
+            )
+            if chosen is None:
+                print("gti: no device selected", file=sys.stderr)
+                return
+            address = chosen.address
+            print(f"Selected {chosen.name} ({chosen.address})", flush=True)
+        if address:
+            transport_obj = BLETransport(role="connect", target=address)
+            print(f"Connecting to BLE device {address} …", flush=True)
+            role = "client"
+        else:
+            transport_obj = BLETransport(role="listen")
+            print("Waiting for BLE connection …", flush=True)
+            role = "server"
+        await _run_session(transport_obj, role=role, receive_dir=receive_dir)
+        return
+
+    from .adapters import open_connection
 
     if scan:
-        from .discovery import discover, pick_device
+        from .discovery import discover
 
         print(f"Scanning for Bluetooth devices ({scan_timeout:.0f}s) …", flush=True)
         devices = await discover(scan_timeout)
-        loop = asyncio.get_running_loop()
         chosen = await loop.run_in_executor(
             None, lambda: pick_device(devices)
         )
@@ -223,14 +289,14 @@ async def _run_chat(
         # this avoids opening a non-existent channel (which can crash
         # IOBluetooth on recent macOS releases).
         kwargs["require_sdp"] = channel is None
-        transport = open_connection("rfcomm_connect", address=address, **kwargs)
+        transport_obj = open_connection("rfcomm_connect", address=address, **kwargs)
         print(f"Connecting to {address} …", flush=True)
         role = "client"
     else:
-        transport = open_connection("rfcomm_listen", **kwargs)
+        transport_obj = open_connection("rfcomm_listen", **kwargs)
         print("Waiting for incoming connection …", flush=True)
         role = "server"
-    await _run_session(transport, role=role, receive_dir=receive_dir)
+    await _run_session(transport_obj, role=role, receive_dir=receive_dir)
 
 
 # ── parser ────────────────────────────────────────────────────────────────────
@@ -251,6 +317,12 @@ def _build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--timeout", type=float, default=8.0, help="scan duration in seconds"
     )
+    scan.add_argument(
+        "--transport",
+        choices=["rfcomm", "ble"],
+        default=None,
+        help="transport to scan (prompted when omitted)",
+    )
 
     chat = sub.add_parser("chat", help="interactive chat + file session over RFCOMM")
     group = chat.add_mutually_exclusive_group()
@@ -268,6 +340,12 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=8.0,
         help="scan duration in seconds when --scan is used",
+    )
+    chat.add_argument(
+        "--transport",
+        choices=["rfcomm", "ble"],
+        default=None,
+        help="transport to use (prompted when omitted)",
     )
     chat.add_argument(
         "--channel",
@@ -296,7 +374,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.command == "scan":
         try:
-            asyncio.run(_run_scan(args.timeout))
+            asyncio.run(_run_scan(args.timeout, args.transport))
         except (ImportError, OSError, RuntimeError) as exc:
             print(f"gti: {exc}", file=sys.stderr)
             return 1
@@ -311,6 +389,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     receive_dir=args.receive_dir,
                     scan=args.scan,
                     scan_timeout=args.timeout,
+                    transport=args.transport,
                 )
             )
         except (ImportError, OSError, RuntimeError) as exc:

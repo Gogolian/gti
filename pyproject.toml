@@ -23,7 +23,10 @@ dependencies = []
 # Real Bluetooth Classic RFCOMM radios (platform libraries).  The core library,
 # the in-memory loopback, and the whole test-suite need none of these.
 # macOS drives IOBluetooth through pyobjc; Foundation/NSObject come from Cocoa.
-macos = ["pyobjc-framework-Cocoa>=9.0; sys_platform=='darwin'"]
+macos = [
+    "pyobjc-framework-Cocoa>=9.0; sys_platform=='darwin'",
+    "pyobjc-framework-CoreBluetooth>=9.0; sys_platform=='darwin'",
+]
 dev = ["mypy>=1.0"]
 
 [project.scripts]
