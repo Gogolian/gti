@@ -52,7 +52,9 @@ def unique_path(directory: Union[str, Path], name: str) -> Path:
     inserted before the suffix (``notes.txt`` → ``notes.1.txt``).
     """
     directory = Path(directory)
-    safe = os.path.basename(name) or "received.bin"
+    safe = os.path.basename(name).replace("\x00", "")
+    if safe in ("", ".", ".."):
+        safe = "received.bin"
     target = directory / safe
     stem, suffix = target.stem, target.suffix
     n = 1

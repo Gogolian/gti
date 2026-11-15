@@ -42,6 +42,14 @@ class TestUniquePath(unittest.TestCase):
             self.assertEqual(p.parent, directory)
             self.assertEqual(p.name, "passwd")
 
+    def test_rejects_dot_names(self) -> None:
+        with tempfile.TemporaryDirectory() as d:
+            directory = Path(d)
+            for name in ("", ".", ".."):
+                p = unique_path(directory, name)
+                self.assertEqual(p.parent, directory)
+                self.assertEqual(p.name, "received.bin")
+
 
 class TestFileTransfer(unittest.IsolatedAsyncioTestCase):
     async def test_small_file(self) -> None:
