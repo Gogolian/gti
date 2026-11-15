@@ -354,8 +354,11 @@ class Peer:
 
     async def start(self) -> None:
         """Start the transport and writer task."""
-        await self._transport.start()
+        # Register the receive callback *before* starting the transport: some
+        # adapters begin reading (and dispatching) inside start(), and a frame
+        # arriving before the callback is set would be silently dropped.
         self._transport.on_receive(self._route)
+        await self._transport.start()
         self._writer_task = asyncio.create_task(self._drain_queue())
 
     async def stop(self) -> None:

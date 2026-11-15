@@ -2,26 +2,33 @@
 
 Usage::
 
-    gti demo                         # loopback chat + file demo (no hardware needed)
-    gti listen                       # accept an incoming RFCOMM connection
-    gti connect --address <addr>     # connect to a peer over RFCOMM
-    gti chat [--address <addr>]      # interactive chat session
-    gti send-file [--address <addr>] PATH   # send one file to a peer
+    gti demo                # loopback chat + file demo (no hardware needed)
+    gti chat                # listen for an incoming RFCOMM connection
+    gti chat --address ADDR # connect to a peer over RFCOMM
+
+``chat`` is a unified session: both peers can send chat messages and files
+(`/file PATH`) in either direction over the single connection.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import sys
-from typing import List, Optional
+from pathlib import Path
+from typing import Callable, List, Optional
+
+InputFn = Callable[[str], str]
+PrintFn = Callable[..., object]
 
 
 # ── demo ──────────────────────────────────────────────────────────────────────
 
 async def _run_demo() -> None:
     """Two in-process peers exchange a chat message and a small file."""
-    import tempfile, os
+    import tempfile
+
     from .adapters.loopback import create_rfcomm_loopback
     from .peer import Peer
     from .services.chat import ChatService
@@ -66,71 +73,102 @@ async def _run_demo() -> None:
         os.unlink(tmp.name)
 
 
-# ── interactive chat helper ────────────────────────────────────────────────────
+# ── unified session ───────────────────────────────────────────────────────────
 
-async def _run_chat(address: Optional[str]) -> None:
-    """Interactive readline chat loop; Ctrl-C or EOF to quit."""
-    from .adapters import open_connection
+def _save_received_file(name: str, data: bytes, directory: Path) -> Path:
+    """Write *data* to *directory* under *name*, never overwriting."""
+    safe = os.path.basename(name) or "received.bin"
+    target = directory / safe
+    stem, suffix = target.stem, target.suffix
+    n = 1
+    while target.exists():
+        target = directory / f"{stem}.{n}{suffix}"
+        n += 1
+    target.write_bytes(data)
+    return target
+
+
+async def _run_session(
+    transport,
+    *,
+    role: str,
+    input_fn: InputFn = input,
+    print_fn: PrintFn = print,
+    receive_dir: Optional[Path] = None,
+) -> None:
+    """Unified interactive session over *transport*: chat + files, both ways.
+
+    *role* must be ``"client"`` (we dial) or ``"server"`` (we listen) — the
+    peer multiplexer splits request-id space by role, so the two ends of a
+    connection must use opposite roles.
+
+    Commands: ``/file PATH`` send a file, ``/quit`` leave the session;
+    anything else is sent as a chat message.
+    """
     from .peer import Peer
     from .services.chat import ChatService
+    from .services.file_transfer import FileTransferService
 
-    role: str
-    if address:
-        transport = open_connection("rfcomm_connect", address=address)
-        role = "client"
-        print(f"Connecting to {address} …", flush=True)
-    else:
-        transport = open_connection("rfcomm_listen")
-        role = "server"
-        print("Waiting for incoming connection …", flush=True)
+    def _print_peer(text: str) -> None:
+        print_fn(f"\r[peer] {text}\n> ", end="", flush=True)
 
-    def _on_message(text: str) -> None:
-        print(f"\r[peer] {text}\n> ", end="", flush=True)
+    received_files: List[Path] = []
 
-    svc = ChatService(on_message=_on_message)
+    def _on_file(name: str, data: bytes) -> None:
+        path = _save_received_file(name, data, receive_dir or Path.cwd())
+        received_files.append(path)
+        _print_peer(f"file {name!r} saved to {path}")
+
+    chat = ChatService(on_message=_print_peer)
+    files = FileTransferService(on_file=_on_file)
     peer = Peer(transport, role=role)
-    peer.register(1, svc.handle)
+    peer.register(1, chat.handle)
+    peer.register(2, files.handle)
 
     async with peer:
-        print("Connected.  Type a message and press Enter; Ctrl-C to quit.")
+        print_fn(
+            "Connected.  Type a message, '/file PATH' to send a file, "
+            "'/quit' to leave."
+        )
         loop = asyncio.get_running_loop()
         while True:
             try:
-                line = await loop.run_in_executor(None, input, "> ")
+                line = (await loop.run_in_executor(None, input_fn, "> ")).strip()
             except (EOFError, KeyboardInterrupt):
                 break
-            if line.strip():
-                await svc.send(line, peer)
+            if not line:
+                continue
+            if line in ("/quit", "/q"):
+                break
+            if line.startswith("/file "):
+                path = line[len("/file "):].strip().strip('"')
+                if not os.path.isfile(path):
+                    print_fn(f"gti: no such file: {path}")
+                    continue
+                await files.send(path, peer)
+                print_fn(f"sent file {path}")
+            elif line.startswith("/"):
+                print_fn("gti: unknown command; use /file PATH or /quit")
+            else:
+                await chat.send(line, peer)
 
 
-# ── send-file helper ───────────────────────────────────────────────────────────
-
-async def _run_send_file(path: str, address: Optional[str]) -> None:
+async def _run_chat(address: Optional[str]) -> None:
+    """Open an RFCOMM connection (dial or listen) and run the unified session."""
     from .adapters import open_connection
-    from .peer import Peer
-    from .services.file_transfer import FileTransferService
 
-    role: str
     if address:
         transport = open_connection("rfcomm_connect", address=address)
-        role = "client"
         print(f"Connecting to {address} …", flush=True)
+        role = "client"
     else:
         transport = open_connection("rfcomm_listen")
-        role = "server"
         print("Waiting for incoming connection …", flush=True)
-
-    svc = FileTransferService()
-    peer = Peer(transport, role=role)
-    peer.register(2, svc.handle)
-
-    async with peer:
-        print(f"Sending {path!r} …", flush=True)
-        await svc.send(path, peer)
-        print("Done.")
+        role = "server"
+    await _run_session(transport, role=role)
 
 
-# ── parser ─────────────────────────────────────────────────────────────────────
+# ── parser ────────────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -140,17 +178,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("demo", help="run a loopback chat + file demo (no hardware needed)")
-    sub.add_parser("listen", help="accept an incoming RFCOMM connection (placeholder)")
 
-    connect = sub.add_parser("connect", help="connect to a peer over RFCOMM (placeholder)")
-    connect.add_argument("--address", required=True, help="peer Bluetooth address")
-
-    chat = sub.add_parser("chat", help="interactive chat session")
-    chat.add_argument("--address", help="peer Bluetooth address (omit to listen)")
-
-    send = sub.add_parser("send-file", help="send one file to a peer")
-    send.add_argument("--address", help="peer Bluetooth address (omit to listen)")
-    send.add_argument("path", help="path to the file to send")
+    chat = sub.add_parser("chat", help="interactive chat + file session over RFCOMM")
+    chat.add_argument(
+        "--address",
+        help="peer Bluetooth address (omit to wait for an incoming connection)",
+    )
 
     return parser
 
@@ -164,16 +197,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     if args.command == "chat":
-        asyncio.run(_run_chat(getattr(args, "address", None)))
+        asyncio.run(_run_chat(args.address))
         return 0
 
-    if args.command == "send-file":
-        asyncio.run(_run_send_file(args.path, getattr(args, "address", None)))
-        return 0
-
-    # listen / connect are stubs (require real BT hardware to test)
-    print(f"gti: command {args.command!r} is not yet implemented", file=sys.stderr)
-    return 1
+    parser.error(f"unknown command {args.command!r}")  # pragma: no cover
+    return 2
 
 
 if __name__ == "__main__":
