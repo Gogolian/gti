@@ -31,6 +31,7 @@ _INCOMING = 1  # kIOBluetoothUserNotificationChannelDirectionIncoming
 # Raw SDP data-element encodings.  gti advertises its own service UUID so a
 # client can find the gti record even when the peer also exposes other SPP
 # services (macOS often has a built-in "COM5" SPP record).
+_SPP_UUID_BYTES = bytes.fromhex("0000110100001000800000805f9b34fb")
 _GTI_UUID_BYTES = bytes.fromhex("e6031152a17a4f769aa5cba1b4321dcf")
 _L2CAP_UUID_BYTES = bytes.fromhex("0100")
 _RFCOMM_UUID_BYTES = bytes.fromhex("0003")
@@ -146,7 +147,7 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
         # Values use the IOBluetoothSDPDataElement dictionary/bytes format:
         # UUIDs and protocol identifiers are raw SDP data-element bytes.
         return {
-            "0001 - ServiceClassIDList": [_GTI_UUID_BYTES],
+            "0001 - ServiceClassIDList": [_SPP_UUID_BYTES, _GTI_UUID_BYTES],
             "0004 - ProtocolDescriptorList": [
                 [_L2CAP_UUID_BYTES],
                 [
@@ -219,6 +220,18 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
             from Foundation import NSRunLoop, NSDate
 
             try:
+                # Register for incoming channels first: the daemon needs an
+                # interested client before the SDP record can route a
+                # connection to us.
+                self._open_notification = (
+                    IOBluetoothRFCOMMChannel
+                    .registerForChannelOpenNotifications_selector_withChannelID_direction_(
+                        delegate,
+                        b"rfcommChannelOpened:channel:",
+                        self._requested_channel,
+                        _INCOMING,
+                    )
+                )
                 try:
                     self._publish_sdp(IOBluetoothSDPServiceRecord)
                 except Exception as exc:
@@ -231,15 +244,22 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
                         self._channel_id,
                         self._channel_id,
                     )
-                self._open_notification = (
-                    IOBluetoothRFCOMMChannel
-                    .registerForChannelOpenNotifications_selector_withChannelID_direction_(
-                        delegate,
-                        b"rfcommChannelOpened:channel:",
-                        self._channel_id,
-                        _INCOMING,
+                elif self._channel_id != self._requested_channel:
+                    # The system assigned a different channel; move the
+                    # incoming-channel registration to it.
+                    try:
+                        self._open_notification.unregister()
+                    except Exception:
+                        pass
+                    self._open_notification = (
+                        IOBluetoothRFCOMMChannel
+                        .registerForChannelOpenNotifications_selector_withChannelID_direction_(
+                            delegate,
+                            b"rfcommChannelOpened:channel:",
+                            self._channel_id,
+                            _INCOMING,
+                        )
                     )
-                )
             except Exception as exc:
                 bt_error.append(f"IOBluetooth host setup failed: {exc}")
             finally:
@@ -382,22 +402,46 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
                 "running?  (or pass --channel N to force a channel)"
             )
 
-        ret, channel = await loop.run_in_executor(
-            None,
-            lambda: device.openRFCOMMChannelSync_withChannelID_delegate_(
-                None, channel_id, delegate
-            ),
-        )
-        if ret != 0 or channel is None:
+        # openRFCOMMChannelSync:withChannelID:delegate: crashes on recent
+        # macOS releases (the out-parameter is not bridged correctly).  Use
+        # the channel object's initializer instead; it returns the channel
+        # directly and reports open failures as an IOReturn.
+        IOBluetoothRFCOMMChannel = ns["IOBluetoothRFCOMMChannel"]
+        classic_peer = device.classicPeer()
+        if classic_peer is None:
+            raise OSError(
+                f"Bluetooth device {self._address} is not connected; "
+                "pair/connect it first"
+            )
+
+        def _open_channel() -> tuple[Any, int]:
+            channel_obj = (
+                IOBluetoothRFCOMMChannel.alloc()
+                .initWithDevice_andClassicPeer_channelID_delegate_(
+                    device, classic_peer, channel_id, delegate
+                )
+            )
+            if channel_obj is None:
+                return None, -1
+            channel_obj.setupRFCOMMChannelForDevice()
+            return channel_obj, int(channel_obj.waitforChanneOpen())
+
+        channel_obj, ret = await loop.run_in_executor(None, _open_channel)
+        if channel_obj is None or ret != 0 or not channel_obj.isOpen():
+            if channel_obj is not None:
+                try:
+                    channel_obj.closeChannel()
+                except Exception:
+                    pass
             raise OSError(
                 f"failed to open RFCOMM channel {channel_id} on "
-                f"{self._address}: IOBluetooth error 0x{ret:08x}"
+                f"{self._address}: IOBluetooth error 0x{ret & 0xFFFFFFFF:08x}"
             )
         self._channel_id = channel_id
-
-        self._rfcomm_channel = channel
+        self._rfcomm_channel = channel_obj
         self._reader = rx_reader
         self._start_recv()
+
 
     async def send(self, frame: bytes) -> None:
         if self._closed or self._rfcomm_channel is None:
