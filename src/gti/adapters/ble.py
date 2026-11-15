@@ -41,10 +41,10 @@ BLE_TX_UUID = "e6031152-a17a-4f76-9aa5-cba1b4321dc2"
 _DEFAULT_PAYLOAD = 180
 
 
-def _require_macos() -> None:
-    if sys.platform != "darwin":
+def _require_ble_supported() -> None:
+    if sys.platform not in ("darwin", "win32"):
         raise RuntimeError(
-            "BLE transport is currently implemented on macOS only; "
+            "BLE transport is currently implemented on macOS and Windows; "
             "use --transport rfcomm on this platform"
         )
 
@@ -422,10 +422,10 @@ class BLETransport(Transport):
         *,
         role: str = "listen",
         target: Optional[str] = None,
-        timeout: float = 30.0,
+        timeout: float = 60.0,
     ) -> None:
         super().__init__()
-        _require_macos()
+        _require_ble_supported()
         if role not in ("listen", "connect"):
             raise ValueError("role must be 'listen' or 'connect'")
         self._role = role
@@ -447,8 +447,14 @@ class BLETransport(Transport):
         loop = asyncio.get_running_loop()
         ctx = multiprocessing.get_context("spawn")
         parent_conn, child_conn = ctx.Pipe(duplex=True)
+        if sys.platform == "win32":
+            from .ble_windows import ble_process_windows
+
+            target = ble_process_windows
+        else:
+            target = _ble_process
         proc = ctx.Process(
-            target=_ble_process,
+            target=target,
             args=(child_conn, self._role, self._target),
             daemon=True,
         )
@@ -564,14 +570,20 @@ class BLETransport(Transport):
         await self._notify_close()
 
 
-async def discover_ble(timeout: float = 8.0) -> List[Device]:
+async def discover_ble(timeout: float = 15.0) -> List[Device]:
     """Scan for gti BLE peripherals."""
-    _require_macos()
+    _require_ble_supported()
     loop = asyncio.get_running_loop()
     ctx = multiprocessing.get_context("spawn")
     parent_conn, child_conn = ctx.Pipe(duplex=False)
+    if sys.platform == "win32":
+        from .ble_windows import ble_scan_process_windows
+
+        target = ble_scan_process_windows
+    else:
+        target = _ble_scan_process
     proc = ctx.Process(
-        target=_ble_scan_process,
+        target=target,
         args=(child_conn, timeout),
         daemon=True,
     )

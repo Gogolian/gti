@@ -50,3 +50,11 @@ class TestBLEFraming(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestWindowsAddress(unittest.TestCase):
+    def test_address_to_mac(self) -> None:
+        from gti.adapters.ble_windows import _address_to_mac
+
+        self.assertEqual(_address_to_mac(0x112233445566), "11:22:33:44:55:66")
+        self.assertEqual(_address_to_mac(0x000000000001), "00:00:00:00:00:01")

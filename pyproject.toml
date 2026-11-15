@@ -27,6 +27,15 @@ macos = [
     "pyobjc-framework-Cocoa>=9.0; sys_platform=='darwin'",
     "pyobjc-framework-CoreBluetooth>=9.0; sys_platform=='darwin'",
 ]
+windows = [
+    "winrt-runtime>=2.0; sys_platform=='win32'",
+    "winrt-Windows.Foundation>=2.0; sys_platform=='win32'",
+    "winrt-Windows.Foundation.Collections>=2.0; sys_platform=='win32'",
+    "winrt-Windows.Devices.Bluetooth>=2.0; sys_platform=='win32'",
+    "winrt-Windows.Devices.Bluetooth.Advertisement>=2.0; sys_platform=='win32'",
+    "winrt-Windows.Devices.Bluetooth.GenericAttributeProfile>=2.0; sys_platform=='win32'",
+    "winrt-Windows.Storage.Streams>=2.0; sys_platform=='win32'",
+]
 dev = ["mypy>=1.0"]
 
 [project.scripts]
@@ -50,3 +59,7 @@ no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 show_error_codes = true
+
+[[tool.mypy.overrides]]
+module = ["winrt.*"]
+ignore_missing_imports = true

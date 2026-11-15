@@ -222,8 +222,9 @@ async def _run_chat(
     channel: Optional[int] = None,
     receive_dir: Optional[Path] = None,
     scan: bool = False,
-    scan_timeout: float = 8.0,
+    scan_timeout: float = 15.0,
     transport: Optional[str] = None,
+    connect_timeout: float = 60.0,
 ) -> None:
     """Open a connection (dial or listen) and run the unified session."""
     from .address import normalize_address
@@ -248,7 +249,9 @@ async def _run_chat(
             address = chosen.address
             print(f"Selected {chosen.name} ({chosen.address})", flush=True)
         if address:
-            transport_obj = BLETransport(role="connect", target=address)
+            transport_obj = BLETransport(
+                role="connect", target=address, timeout=connect_timeout
+            )
             print(f"Connecting to BLE device {address} …", flush=True)
             role = "client"
         else:
@@ -315,7 +318,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     scan = sub.add_parser("scan", help="list paired/nearby Bluetooth devices")
     scan.add_argument(
-        "--timeout", type=float, default=8.0, help="scan duration in seconds"
+        "--timeout", type=float, default=15.0, help="scan duration in seconds"
     )
     scan.add_argument(
         "--transport",
@@ -338,8 +341,14 @@ def _build_parser() -> argparse.ArgumentParser:
     chat.add_argument(
         "--timeout",
         type=float,
-        default=8.0,
+        default=15.0,
         help="scan duration in seconds when --scan is used",
+    )
+    chat.add_argument(
+        "--connect-timeout",
+        type=float,
+        default=60.0,
+        help="seconds to wait for a BLE connection",
     )
     chat.add_argument(
         "--transport",
@@ -390,6 +399,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                     scan=args.scan,
                     scan_timeout=args.timeout,
                     transport=args.transport,
+                    connect_timeout=args.connect_timeout,
                 )
             )
         except (ImportError, OSError, RuntimeError) as exc:

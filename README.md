@@ -31,7 +31,8 @@ protocol and services can be tested without hardware.
 
 ```bash
 python3 -m pip install -e .            # core library + in-memory loopback (no radio deps)
-python3 -m pip install -e ".[macos]"   # + pyobjc-framework-Cocoa, for RFCOMM on macOS
+python3 -m pip install -e ".[macos]"   # + pyobjc, for RFCOMM/BLE on macOS
+python3 -m pip install -e ".[windows]" # + WinRT, for BLE on Windows
 ```
 
 Linux and Windows use the standard-library socket API and need no extra
@@ -69,10 +70,11 @@ On macOS, the RFCOMM listener publishes a gti-specific SDP record so
 the listener falls back to a fixed RFCOMM channel (default 1) and prints the
 channel it is using; pass the same `--channel N` on the dialler.
 
-The BLE transport is currently implemented on macOS. It uses a GATT service
+The BLE transport is implemented on macOS and Windows. It uses a GATT service
 with a write characteristic (central → peripheral) and a notify characteristic
 (peripheral → central), and fragments frames into BLE-sized packets. BLE is
-slower than RFCOMM for file transfer; chat is unaffected.
+slower than RFCOMM for file transfer; chat is unaffected. Use
+`--connect-timeout N` to wait longer for a BLE peer (default 60s).
 
 ## Library use
 
@@ -132,7 +134,9 @@ that is the next milestone.
   RFCOMM channel, so the dialler may need an explicit `--channel`.
 - `gti scan` lists paired devices on macOS and known devices via `bluetoothctl`
   on Linux; Windows discovery is not implemented yet.
-- BLE transport is macOS-only for now; Windows/Linux BLE adapters are future work.
+- BLE transport is implemented on macOS and Windows; Linux BLE is future work.
+- Windows BLE peripheral mode requires Windows 10 1803+ and an adapter that
+  supports the LE peripheral role.
 - BLE file transfer is slower than RFCOMM (typically 2–10×, depending on PHY,
   MTU, and connection interval).
 - No device discovery or pairing UX; pass a Bluetooth address explicitly.
