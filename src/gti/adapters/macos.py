@@ -26,7 +26,7 @@ __all__ = ["MacOSRFCOMMHostTransport", "MacOSRFCOMMConsumerTransport"]
 logger = logging.getLogger(__name__)
 
 _FRAME_LEN = struct.Struct(">I")
-_INCOMING = 1  # kIOBluetoothUserNotificationChannelDirectionIncoming
+_ANY_DIRECTION = 0  # kIOBluetoothUserNotificationChannelDirectionAny
 
 # Raw SDP data-element encodings.  gti advertises its own service UUID so a
 # client can find the gti record even when the peer also exposes other SPP
@@ -132,6 +132,7 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
         self._rfcomm_channel: Any = None
         self._sdp_record: Any = None
         self._open_notification: Any = None
+        self._delegate: Any = None
         self._closed_event = asyncio.Event()
 
     @property
@@ -160,6 +161,16 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
                 ],
             ],
             "0005 - BrowseGroupList*": [_PUBLIC_BROWSE_GROUP_BYTES],
+            "0009 - BluetoothProfileDescriptorList": [
+                [
+                    _SPP_UUID_BYTES,
+                    {
+                        "DataElementSize": 2,
+                        "DataElementType": 1,
+                        "DataElementValue": 0x0102,
+                    },
+                ]
+            ],
             "0100 - ServiceName*": "gti",
         }
 
@@ -212,6 +223,7 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
         Delegate = _get_delegate_class()
         delegate = Delegate.alloc().init()
         delegate._setup(loop, rx_reader, on_open=connected)
+        self._delegate = delegate
 
         bt_ready = threading.Event()
         bt_error: list[str] = []
@@ -229,7 +241,7 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
                         delegate,
                         b"rfcommChannelOpened:channel:",
                         self._requested_channel,
-                        _INCOMING,
+                        _ANY_DIRECTION,
                     )
                 )
                 try:
@@ -244,9 +256,9 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
                         self._channel_id,
                         self._channel_id,
                     )
-                elif self._channel_id != self._requested_channel:
-                    # The system assigned a different channel; move the
-                    # incoming-channel registration to it.
+                else:
+                    # Re-register after SDP publishing so the daemon sees the
+                    # final channel id (and keeps the delegate alive).
                     try:
                         self._open_notification.unregister()
                     except Exception:
@@ -257,7 +269,7 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
                             delegate,
                             b"rfcommChannelOpened:channel:",
                             self._channel_id,
-                            _INCOMING,
+                            _ANY_DIRECTION,
                         )
                     )
             except Exception as exc:
@@ -334,6 +346,7 @@ class MacOSRFCOMMHostTransport(RFCOMMStreamTransport):
                 channel.closeChannel()
             except Exception:
                 pass
+        self._delegate = None
         await super().close()
 
 
@@ -349,6 +362,7 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
         self._channel_id = channel
         self._require_sdp = require_sdp
         self._rfcomm_channel: Any = None
+        self._delegate: Any = None
 
     @property
     def channel(self) -> int:
@@ -370,6 +384,7 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
         Delegate = _get_delegate_class()
         delegate = Delegate.alloc().init()
         delegate._setup(loop, rx_reader, on_open=connected)
+        self._delegate = delegate
 
         device = IOBluetoothDevice.deviceWithAddressString_(self._address)
         if device is None:
@@ -461,4 +476,5 @@ class MacOSRFCOMMConsumerTransport(RFCOMMStreamTransport):
                 channel.closeChannel()
             except Exception:
                 pass
+        self._delegate = None
         await super().close()
