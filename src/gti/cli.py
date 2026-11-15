@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import logging
 import os
 import sys
 from pathlib import Path
@@ -124,6 +125,9 @@ async def _run_session(
     peer.register(2, files.handle)
 
     async with peer:
+        channel = getattr(transport, "channel", None)
+        if channel is not None:
+            print_fn(f"Using RFCOMM channel {channel}.")
         print_fn(
             "Connected.  Type a message, '/file PATH' to send a file, "
             "'/quit' to leave."
@@ -206,7 +210,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--channel",
         type=int,
         default=None,
-        help="RFCOMM channel/port (default: adapter default, usually 1)",
+        help="RFCOMM channel/port (default: 1; macOS host may fall back to this)",
     )
     chat.add_argument(
         "--receive-dir",
@@ -219,6 +223,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    logging.basicConfig(level=logging.WARNING, format="gti: %(message)s")
     parser = _build_parser()
     args = parser.parse_args(argv)
 
