@@ -82,6 +82,7 @@ async def _run_peripheral(conn: Connection) -> None:
         GattProtectionLevel,
         GattServiceProvider,
         GattServiceProviderAdvertisingParameters,
+        GattWriteOption,
     )
 
     loop = asyncio.get_running_loop()
@@ -135,7 +136,8 @@ async def _run_peripheral(conn: Connection) -> None:
             request = await args.get_request_async()
             for frame in assembler.feed(_bytes_from_buffer(request.value)):
                 conn.send_bytes(b"D" + frame)
-            request.respond()
+            if request.option == GattWriteOption.WRITE_WITH_RESPONSE:
+                request.respond()
         except Exception:
             logger.exception("BLE write request failed")
 
