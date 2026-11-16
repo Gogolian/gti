@@ -94,21 +94,40 @@ gti llm-host --base-url http://127.0.0.1:11434/v1
 On the harness machine, scan for the host and expose the model locally:
 
 ```bash
-gti llm-proxy --scan --model qwen3.8-27b
+gti llm-proxy --scan
 # OpenAI-compatible base URL: http://127.0.0.1:8765/v1
+```
 
+With no `--model` options, `/v1/models` mirrors the host's upstream model
+catalog. That means a llama.cpp router's currently advertised models appear
+automatically, and the remote harness can discover more than one model over
+the same link. Use repeated `--model` options only when you want a fixed local
+list:
+
+```bash
+gti llm-proxy --scan --model qwen3.8-27b --model qwen3.8-27b-fast
 ```
 
 Either side can listen or connect: use `--address ADDRESS` instead of `--scan`
 to connect to a known BLE address/identifier, or omit both to listen. The two
-ends must use opposite roles. `--port` changes the proxy's loopback port;
-repeat `--model` to advertise IDs via `/v1/models` (this list is configured
-locally, not discovered from the host). If the upstream requires a bearer key,
-set `GTI_LLM_API_KEY` on the **host**, or use `--api-key-env NAME`. Proxy
-credentials are not forwarded to the host.
+ends must use opposite roles. `--port` changes the proxy's loopback port. If
+the upstream requires a bearer key, set `GTI_LLM_API_KEY` on the **host**, or
+use `--api-key-env NAME`. Proxy credentials are not forwarded to the host.
 
-For Pi, add a provider to `~/.pi/agent/models.json` on the harness machine
-(merge it with any existing providers, and replace the model ID and limits):
+While a chat completion is active, `llm-host` and `llm-proxy` print a live
+one-second average on stderr, for example:
+
+```text
+[inference] down 7.7 kB/s  up 0 B/s  (1 active)
+```
+
+When the request finishes the line is replaced with a summary. The meter is
+byte-based (not token-based) and is disabled automatically when stderr is not
+a terminal, so background logs stay clean.
+
+For Pi, the simplest option is to add a provider to `~/.pi/agent/models.json`
+on the harness machine (merge it with any existing providers, and replace the
+model ID and limits):
 
 ```json
 {
@@ -125,8 +144,22 @@ For Pi, add a provider to `~/.pi/agent/models.json` on the harness machine
 
 Select the model with `/model`. The dummy key makes the model selectable; it
 is not authentication. Configure Pi compatibility settings if your particular
-backend requires them. Other harnesses can use the same base URL. For a quick
-check:
+backend requires them. Other harnesses can use the same base URL.
+
+If you want Pi to discover the proxy's model list dynamically, install the
+provider extension from [`examples/pi-gti-provider.ts`](examples/pi-gti-provider.ts):
+
+```bash
+mkdir -p ~/.pi/agent/extensions
+cp examples/pi-gti-provider.ts ~/.pi/agent/extensions/gti.ts
+```
+
+It registers the `gti` provider and calls `/v1/models` through `refreshModels`,
+so models advertised by the proxy appear in `/model` without editing
+`models.json`. `GTI_BASE_URL`, `GTI_CONTEXT_WINDOW`, and `GTI_MAX_TOKENS`
+override its defaults.
+
+For a quick check:
 
 ```bash
 curl -N http://127.0.0.1:8765/v1/chat/completions \

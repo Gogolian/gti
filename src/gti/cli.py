@@ -308,6 +308,7 @@ async def _run_llm(args: argparse.Namespace) -> None:
     from .adapters.ble import BLETransport, discover_ble
     from .discovery import pick_device
     from .peer import Peer
+    from .telemetry import TrafficMeter
     # Fail before starting a potentially long BLE scan/listen if the extra is missing.
     try:
         import aiohttp  # noqa: F401
@@ -328,11 +329,13 @@ async def _run_llm(args: argparse.Namespace) -> None:
     transport = BLETransport(role="connect" if address else "listen", target=address,
                              timeout=args.connect_timeout)
     peer = Peer(transport, role=role)
+    meter = TrafficMeter()
     if args.command == "llm-host":
         from .services.base import LLM_SERVICE_ID
         from .services.llm import LLMService
 
-        service = LLMService(args.base_url, api_key=os.environ.get(args.api_key_env))
+        service = LLMService(args.base_url, api_key=os.environ.get(args.api_key_env),
+                            meter=meter)
         peer.register(LLM_SERVICE_ID, service.handle)
     print("Connecting over BLE …" if address else "Waiting for BLE connection …", flush=True)
     async with peer:
@@ -343,7 +346,7 @@ async def _run_llm(args: argparse.Namespace) -> None:
             from aiohttp import web
             from .llm_proxy import create_app
 
-            runner = web.AppRunner(create_app(peer, args.model), handler_cancellation=True)
+            runner = web.AppRunner(create_app(peer, args.model, meter=meter), handler_cancellation=True)
             await runner.setup()
             try:
                 site = web.TCPSite(runner, "127.0.0.1", args.port)
@@ -437,7 +440,8 @@ def _build_parser() -> argparse.ArgumentParser:
                       help="environment variable containing upstream API key")
     proxy.add_argument("--port", type=int, default=8765, help="loopback HTTP port")
     proxy.add_argument("--model", action="append", default=[],
-                       help="model ID to advertise in /v1/models (repeatable)")
+                       help="model ID to advertise in /v1/models (repeatable; "
+                            "when omitted, the host's upstream model list is used)")
 
     return parser
 

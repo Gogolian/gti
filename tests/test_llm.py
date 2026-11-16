@@ -293,3 +293,40 @@ class TestLLMConfiguration(unittest.TestCase):
         for url in ("file:///etc/passwd", "http://user:pass@localhost/v1", "http://localhost/v1?key=x"):
             with self.assertRaises(ValueError):
                 LLMService(url)
+
+    async def test_models_discovered_from_host_and_cached(self) -> None:
+        fail = False
+
+        async def upstream_models(request):
+            if fail:
+                return web.json_response({"error": "backend down"}, status=503)
+            return web.json_response({
+                "object": "list",
+                "data": [
+                    {"id": "model-a", "context_length": 32768},
+                    {"id": "model-b", "context_length": 8192},
+                ],
+            })
+
+        async def upstream_chat(request):
+            return web.json_response({"choices": []})
+
+        upstream = web.Application()
+        upstream.router.add_get("/v1/models", upstream_models)
+        upstream.router.add_post("/v1/chat/completions", upstream_chat)
+        base = await self.serve(upstream)
+        self.host.register(LLM_SERVICE_ID, LLMService(base + "/v1").handle)
+        proxy = await self.serve(create_app(self.client))
+
+        async with self.session.get(proxy + "/v1/models") as response:
+            self.assertEqual(response.status, 200)
+            data = await response.json()
+        self.assertEqual([model["id"] for model in data["data"]], ["model-a", "model-b"])
+        self.assertEqual(data["data"][0]["context_length"], 32768)
+
+        # A later backend failure should not make the catalog disappear.
+        fail = True
+        async with self.session.get(proxy + "/v1/models") as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual([model["id"] for model in (await response.json())["data"]],
+                             ["model-a", "model-b"])
