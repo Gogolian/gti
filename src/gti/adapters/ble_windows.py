@@ -56,7 +56,9 @@ def _bytes_from_buffer(buffer: Any) -> bytes:
     if buffer is None:
         return b""
     reader = DataReader.from_buffer(buffer)
-    return bytes(reader.read_bytes(buffer.length))
+    data = bytearray(int(buffer.length))
+    reader.read_bytes(data)
+    return bytes(data)
 
 
 async def _pipe_reader(conn: Connection, on_frame: Any) -> None:
