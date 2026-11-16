@@ -3,23 +3,26 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import unittest
 
 from aiohttp import ClientPayloadError, ClientSession, web
 
 from gti.adapters.ble_framing import FrameAssembler, fragment_frame
+from gti.errors import RemoteError
 from gti.llm_proxy import create_app
 from gti.peer import Peer
 from gti.protocol import Envelope, Kind
 from gti.services.base import CHAT_SERVICE_ID, LLM_SERVICE_ID
 from gti.services.chat import ChatService
-from gti.services.llm import CHUNK_SIZE, LLMService, relay
+from gti.services.llm import UPLOAD_CHUNK_SIZE, LLMService, relay
 from gti.transport import InMemoryTransport, TransportClosed, create_loopback
 
 
 class TestLLMRelay(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.client_transport, host_transport = create_loopback()
+        self.host_transport = host_transport
         self.client = Peer(self.client_transport, role="client")
         self.host = Peer(host_transport, role="server")
         await self.client.start()
@@ -71,7 +74,7 @@ class TestLLMRelay(unittest.IsolatedAsyncioTestCase):
             return response
 
         base = await self.setup_relay(upstream)
-        payload = {"model": "model-x", "stream": True, "messages": [{"role": "user", "content": "x" * 9000}],
+        payload = {"model": "model-x", "stream": True, "messages": [{"role": "user", "content": "x" * 40000}],
                    "tools": [{"type": "function", "function": {"name": "read", "parameters": {"type": "object"}}}]}
         async with self.session.post(base + "/v1/chat/completions", json=payload) as response:
             self.assertEqual(response.status, 200)
@@ -83,9 +86,10 @@ class TestLLMRelay(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(received, [(payload, "Bearer secret")])
         request_events = [Envelope.decode(f) for f in self.client_transport.sent
                           if Envelope.decode(f).kind == Kind.EVENT]
-        uploads = [e.payload for e in request_events if e.payload.startswith(b"U")]
+        uploads = [e.payload for e in request_events if e.payload[:1] in (b"U", b"u")]
         self.assertGreater(len(uploads), 1)
-        self.assertTrue(all(len(x) <= CHUNK_SIZE + 1 for x in uploads))
+        self.assertTrue(all(len(x) <= UPLOAD_CHUNK_SIZE + 1 for x in uploads))
+        self.assertTrue(any(x.startswith(b"u") for x in uploads))
         async with self.session.get(base + "/v1/models") as response:
             self.assertEqual((await response.json())["data"][0]["id"], "model-x")
 
@@ -186,18 +190,18 @@ class TestLLMRelay(unittest.IsolatedAsyncioTestCase):
             await ctx.ack()
             try:
                 async for chunk in ctx.incoming():
-                    self.assertTrue(chunk.startswith(b"U"))
+                    self.assertIn(chunk[:1], (b"U", b"u"))
                     got_chunk.set()
                     await asyncio.sleep(60)
             finally:
                 cancelled.set()
         self.host.register(LLM_SERVICE_ID, stalled)
-        stream = relay(self.client, b"x" * (CHUNK_SIZE * 3))
+        stream = relay(self.client, b"x" * (UPLOAD_CHUNK_SIZE * 3))
         task = asyncio.create_task(stream.__anext__())
         await asyncio.wait_for(got_chunk.wait(), 2)
         await asyncio.sleep(0.05)
         frames = [Envelope.decode(f) for f in self.client_transport.sent]
-        uploads = [f for f in frames if f.kind == Kind.EVENT and f.payload.startswith(b"U")]
+        uploads = [f for f in frames if f.kind == Kind.EVENT and f.payload[:1] in (b"U", b"u")]
         self.assertEqual(len(uploads), 1)
         task.cancel()
         with self.assertRaises(asyncio.CancelledError):
@@ -243,6 +247,120 @@ class TestLLMRelay(unittest.IsolatedAsyncioTestCase):
             await asyncio.sleep(0.01)
         self.assertFalse(self.host._server_inflight)
         self.assertFalse(self.client._client_pending)
+
+    async def test_legacy_client_can_upload_and_receive_raw_response(self) -> None:
+        expected = b"x" * 9000
+
+        async def upstream(request):
+            self.assertEqual(await request.json(), {"model": "legacy"})
+            return web.Response(body=expected)
+
+        await self.setup_relay(upstream)
+        call = await self.client.open_call(LLM_SERVICE_ID, b'{"version":1}')
+        try:
+            await call.wait_ack()
+            await call.send_chunk(b'U{"model":"legacy"}')
+            self.assertEqual(await call.__anext__(), b"A")
+            await call.send_chunk(b"E")
+            self.assertTrue((await call.__anext__()).startswith(b"H"))
+            await call.send_chunk(b"A")
+            received = bytearray()
+            async for record in call:
+                if record == b"Z":
+                    break
+                self.assertEqual(record[:1], b"D")
+                self.assertLessEqual(len(record), 2049)
+                received.extend(record[1:])
+                await call.send_chunk(b"A")
+            self.assertEqual(received, expected)
+        finally:
+            await call.cancel()
+
+    async def test_incompressible_response_is_preserved(self) -> None:
+        rng = random.Random(42)
+        expected = bytes(rng.randrange(256) for _ in range(30000))
+
+        async def upstream(request):
+            return web.Response(body=expected, content_type="application/octet-stream")
+
+        base = await self.setup_relay(upstream)
+        async with self.session.post(base + "/v1/chat/completions", json={}) as response:
+            self.assertEqual(await response.read(), expected)
+        records = [Envelope.decode(frame).payload for frame in self.host_transport.sent]
+        self.assertTrue(any(record.startswith(b"D") for record in records))
+        self.assertFalse(any(record.startswith(b"d") for record in records))
+
+    async def test_unsupported_version_fails_before_upload(self) -> None:
+        async def upstream(request):
+            self.fail("unsupported version must not reach backend")
+
+        await self.setup_relay(upstream)
+        call = await self.client.open_call(LLM_SERVICE_ID, b'{"version":99}')
+        try:
+            with self.assertRaisesRegex(RemoteError, "unsupported LLM relay protocol"):
+                await call.wait_ack()
+        finally:
+            await call.cancel()
+
+    async def test_response_is_batched_and_compressed(self) -> None:
+        async def upstream(request):
+            response = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await response.prepare(request)
+            for _ in range(200):
+                await response.write(b'data: {"choices":[{"delta":{"content":"hello"}}]}\n\n')
+            return response
+
+        base = await self.setup_relay(upstream)
+        async with self.session.post(base + "/v1/chat/completions",
+                                     json={"stream": True, "messages": []}) as response:
+            body = await response.read()
+        self.assertEqual(body.count(b"hello"), 200)
+
+        frames = [Envelope.decode(frame) for frame in self.host_transport.sent]
+        data_records = [
+            frame.payload for frame in frames
+            if frame.kind == Kind.EVENT and frame.payload[:1] in (b"D", b"d")
+        ]
+        self.assertGreater(len(data_records), 0)
+        self.assertLess(len(data_records), 200)
+        self.assertTrue(any(record.startswith(b"d") for record in data_records))
+
+    async def test_models_discovered_from_host_and_cached(self) -> None:
+        fail = False
+
+        async def upstream_models(request):
+            if fail:
+                return web.json_response({"error": "backend down"}, status=503)
+            return web.json_response({
+                "object": "list",
+                "data": [
+                    {"id": "model-a", "context_length": 32768},
+                    {"id": "model-b", "context_length": 8192},
+                ],
+            })
+
+        async def upstream_chat(request):
+            return web.json_response({"choices": []})
+
+        upstream = web.Application()
+        upstream.router.add_get("/v1/models", upstream_models)
+        upstream.router.add_post("/v1/chat/completions", upstream_chat)
+        base = await self.serve(upstream)
+        self.host.register(LLM_SERVICE_ID, LLMService(base + "/v1").handle)
+        proxy = await self.serve(create_app(self.client))
+
+        async with self.session.get(proxy + "/v1/models") as response:
+            self.assertEqual(response.status, 200)
+            data = await response.json()
+        self.assertEqual([model["id"] for model in data["data"]], ["model-a", "model-b"])
+        self.assertEqual(data["data"][0]["context_length"], 32768)
+
+        # A later backend failure should not make the catalog disappear.
+        fail = True
+        async with self.session.get(proxy + "/v1/models") as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual([model["id"] for model in (await response.json())["data"]],
+                             ["model-a", "model-b"])
 
 
 class FragmentedLoopback(InMemoryTransport):
@@ -293,40 +411,3 @@ class TestLLMConfiguration(unittest.TestCase):
         for url in ("file:///etc/passwd", "http://user:pass@localhost/v1", "http://localhost/v1?key=x"):
             with self.assertRaises(ValueError):
                 LLMService(url)
-
-    async def test_models_discovered_from_host_and_cached(self) -> None:
-        fail = False
-
-        async def upstream_models(request):
-            if fail:
-                return web.json_response({"error": "backend down"}, status=503)
-            return web.json_response({
-                "object": "list",
-                "data": [
-                    {"id": "model-a", "context_length": 32768},
-                    {"id": "model-b", "context_length": 8192},
-                ],
-            })
-
-        async def upstream_chat(request):
-            return web.json_response({"choices": []})
-
-        upstream = web.Application()
-        upstream.router.add_get("/v1/models", upstream_models)
-        upstream.router.add_post("/v1/chat/completions", upstream_chat)
-        base = await self.serve(upstream)
-        self.host.register(LLM_SERVICE_ID, LLMService(base + "/v1").handle)
-        proxy = await self.serve(create_app(self.client))
-
-        async with self.session.get(proxy + "/v1/models") as response:
-            self.assertEqual(response.status, 200)
-            data = await response.json()
-        self.assertEqual([model["id"] for model in data["data"]], ["model-a", "model-b"])
-        self.assertEqual(data["data"][0]["context_length"], 32768)
-
-        # A later backend failure should not make the catalog disappear.
-        fail = True
-        async with self.session.get(proxy + "/v1/models") as response:
-            self.assertEqual(response.status, 200)
-            self.assertEqual([model["id"] for model in (await response.json())["data"]],
-                             ["model-a", "model-b"])

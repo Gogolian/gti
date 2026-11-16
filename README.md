@@ -121,9 +121,17 @@ one-second average on stderr, for example:
 [inference] down 7.7 kB/s  up 0 B/s  (1 active)
 ```
 
-When the request finishes the line is replaced with a summary. The meter is
-byte-based (not token-based) and is disabled automatically when stderr is not
-a terminal, so background logs stay clean.
+When the request finishes the line is replaced with a summary. The meter counts
+encoded data-record bytes (after optional compression), not tokens or total
+radio traffic, and is disabled automatically when stderr is not a terminal.
+A lower byte rate after compression does not imply slower generation.
+
+The relay compresses uploads and responses losslessly, batches response bytes
+for up to 100 ms after forwarding the first bytes immediately, and pipelines
+two response records to avoid an ACK round trip per token. Update **both**
+machines to use the optimized LLM service protocol. See
+[throughput measurements and benchmark instructions](docs/llm-performance.md)
+for reproducible tests, protocol details, and the limits of simulated results.
 
 For Pi, the simplest option is to add a provider to `~/.pi/agent/models.json`
 on the harness machine (merge it with any existing providers, and replace the
