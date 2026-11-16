@@ -14,10 +14,13 @@ Windows BLE transport failed
 Traceback (most recent call last):
   File "\gti\src\gti\adapters\ble_windows.py", line 338, in _windows_main
     await _run_central(conn, target)
-  File "\gti\src\gti\adapters\ble_windows.py", line 201, in _run_central
-    from winrt.windows.devices.bluetooth import (
-    ...<3 lines>...
+  File "\gti\src\gti\adapters\ble_windows.py", line 258, in _run_central
+    services_result = await device.get_gatt_services_for_uuid_async(
+                            ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^
+        service_uuid, BluetoothCacheMode.UNCACHED
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
     )
-ImportError: cannot import name 'GattSession' from 'winrt.windows.devices.bluetooth' (\Python3.14.6\Lib\site-packages\winrt\windows\devices\bluetooth\__init__.py)
-gti: BLE transport: cannot import name 'GattSession' from 'winrt.windows.devices.bluetooth' (\Python3.14.6\Lib\site-packages\winrt\windows\devices\bluetooth\__init__.py)
-gti: cannot import name 'GattSession' from 'winrt.windows.devices.bluetooth' (\Python3.14.6\Lib\site-packages\winrt\windows\devices\bluetooth\__init__.py)
+    ^
+TypeError: Invalid parameter count
+gti: BLE transport: Invalid parameter count
+gti: Invalid parameter count
