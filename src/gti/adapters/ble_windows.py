@@ -307,7 +307,7 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
         )
 
     tx.add_value_changed(_value_changed)
-    await tx.write_client_characteristic_configuration_async(
+    await tx.write_client_characteristic_configuration_descriptor_async(
         GattClientCharacteristicConfigurationDescriptorValue.NOTIFY
     )
     _send_control(conn, type="opened", role="connect")
