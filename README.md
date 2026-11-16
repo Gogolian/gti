@@ -94,8 +94,9 @@ gti llm-host --base-url http://127.0.0.1:11434/v1
 On the harness machine, scan for the host and expose the model locally:
 
 ```bash
-gti llm-proxy --scan --model qwen2.5-coder:7b
+gti llm-proxy --scan --model qwen3.8-27b
 # OpenAI-compatible base URL: http://127.0.0.1:8765/v1
+
 ```
 
 Either side can listen or connect: use `--address ADDRESS` instead of `--scan`
