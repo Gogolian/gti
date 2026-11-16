@@ -445,7 +445,12 @@ class Peer:
             seq=0,
             payload=payload,
         )
-        await self._enqueue(env)
+        try:
+            await self._enqueue(env)
+        except BaseException:
+            self._client_pending.pop(rid, None)
+            entry.ack_future.cancel()
+            raise
         return _Call(self, rid, entry)
 
     async def call(
@@ -462,12 +467,17 @@ class Peer:
         rejects the request.
         """
         call_handle = await self.open_call(service_id, payload)
+        complete = False
         try:
             await call_handle.wait_ack(timeout)
             async for chunk in call_handle:
                 yield chunk
+            complete = True
         finally:
-            call_handle.close()
+            if complete:
+                call_handle.close()
+            else:
+                await call_handle.cancel()
 
     async def start(self) -> None:
         """Start the transport and writer task."""

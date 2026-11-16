@@ -28,7 +28,7 @@ import tempfile
 from pathlib import Path
 from typing import Callable, Optional, Union
 
-from ..errors import NotSupportedError, RemoteError
+from ..errors import RemoteError
 from ..peer import Peer, RequestContext
 from ..protocol import Status
 from .base import FILE_TRANSFER_SERVICE_ID
@@ -196,37 +196,36 @@ class FileTransferService:
             }
         )
         call = await peer.open_call(FILE_TRANSFER_SERVICE_ID, meta.encode())
+        complete = False
         try:
             await call.wait_ack()
-            try:
-                remaining = size
-                sent = 0
-                with path.open("rb") as fh:
-                    while remaining > 0:
-                        chunk = fh.read(min(chunk_size, remaining))
-                        if not chunk:
-                            raise OSError("file shrank while it was being sent")
-                        remaining -= len(chunk)
-                        sent += len(chunk)
-                        await call.send_chunk(chunk, end=(remaining == 0))
-                        if on_progress is not None:
-                            on_progress(sent, size)
-                        await asyncio.sleep(0)  # yield between chunks
-                if size == 0:
-                    # An empty file still needs a terminating EVENT.
-                    await call.send_chunk(b"", end=True)
+            remaining = size
+            sent = 0
+            with path.open("rb") as fh:
+                while remaining > 0:
+                    chunk = fh.read(min(chunk_size, remaining))
+                    if not chunk:
+                        raise OSError("file shrank while it was being sent")
+                    remaining -= len(chunk)
+                    sent += len(chunk)
+                    await call.send_chunk(chunk, end=(remaining == 0))
                     if on_progress is not None:
-                        on_progress(0, 0)
+                        on_progress(sent, size)
+                    await asyncio.sleep(0)  # yield between chunks
+            if size == 0:
+                # An empty file still needs a terminating EVENT.
+                await call.send_chunk(b"", end=True)
+                if on_progress is not None:
+                    on_progress(0, 0)
 
-                async for result_bytes in call:
-                    result = json.loads(result_bytes)
-                    if not result.get("ok"):
-                        raise RemoteError(f"file transfer failed: {result}")
-            except (RemoteError, NotSupportedError):
-                raise
-            except BaseException:
-                # Tell the receiver to stop waiting for more chunks.
-                await call.cancel()
-                raise
+            async for result_bytes in call:
+                result = json.loads(result_bytes)
+                if not result.get("ok"):
+                    raise RemoteError(f"file transfer failed: {result}")
+            complete = True
         finally:
-            call.close()
+            if complete:
+                call.close()
+            else:
+                # Also cancel if ACK times out or the caller stops the upload.
+                await call.cancel()

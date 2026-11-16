@@ -235,12 +235,17 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
             name.lower(),
         ):
             return
-        loop.call_soon_threadsafe(found.set_result, (address, name))
+        def _set_found() -> None:
+            if not found.done():
+                found.set_result((address, name))
+
+        loop.call_soon_threadsafe(_set_found)
 
     watcher.add_received(_received)
     watcher.start()
     try:
-        address, _name = await asyncio.wait_for(found, 30.0)
+        # The parent BLETransport enforces the user-configured timeout.
+        address, _name = await found
     finally:
         watcher.stop()
 

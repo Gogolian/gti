@@ -302,12 +302,65 @@ async def _run_chat(
     await _run_session(transport_obj, role=role, receive_dir=receive_dir)
 
 
+# ── inference relay ──────────────────────────────────────────────────────────
+
+async def _run_llm(args: argparse.Namespace) -> None:
+    from .adapters.ble import BLETransport, discover_ble
+    from .discovery import pick_device
+    from .peer import Peer
+    # Fail before starting a potentially long BLE scan/listen if the extra is missing.
+    try:
+        import aiohttp  # noqa: F401
+    except ImportError:
+        raise RuntimeError('LLM relay requires: pip install "gti[llm]"') from None
+
+    address = args.address
+    if args.scan:
+        print(f"Scanning for BLE devices ({args.timeout:.0f}s) …", flush=True)
+        devices = await discover_ble(args.timeout)
+        address_device = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: pick_device(devices)
+        )
+        if address_device is None:
+            raise RuntimeError("no device selected")
+        address = address_device.address
+    role = "client" if address else "server"
+    transport = BLETransport(role="connect" if address else "listen", target=address,
+                             timeout=args.connect_timeout)
+    peer = Peer(transport, role=role)
+    if args.command == "llm-host":
+        from .services.base import LLM_SERVICE_ID
+        from .services.llm import LLMService
+
+        service = LLMService(args.base_url, api_key=os.environ.get(args.api_key_env))
+        peer.register(LLM_SERVICE_ID, service.handle)
+    print("Connecting over BLE …" if address else "Waiting for BLE connection …", flush=True)
+    async with peer:
+        if args.command == "llm-host":
+            print(f"Connected. Relaying inference to {args.base_url}", flush=True)
+            await peer.wait_closed()
+        else:
+            from aiohttp import web
+            from .llm_proxy import create_app
+
+            runner = web.AppRunner(create_app(peer, args.model), handler_cancellation=True)
+            await runner.setup()
+            try:
+                site = web.TCPSite(runner, "127.0.0.1", args.port)
+                await site.start()
+                print(f"Connected. OpenAI endpoint: http://127.0.0.1:{args.port}/v1", flush=True)
+                await peer.wait_closed()
+            finally:
+                await runner.cleanup()
+        print("gti: peer disconnected", file=sys.stderr)
+
+
 # ── parser ────────────────────────────────────────────────────────────────────
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="gti",
-        description="Multiplexed chat and file transfer over one Bluetooth Classic RFCOMM link.",
+        description="Multiplexed chat, file transfer, and LLM relay over Bluetooth.",
     )
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
@@ -369,6 +422,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="directory for received files (default: current directory)",
     )
 
+    host = sub.add_parser("llm-host", help="serve a local OpenAI-compatible model over BLE")
+    proxy = sub.add_parser("llm-proxy", help="expose a BLE model as a loopback OpenAI endpoint")
+    for command in (host, proxy):
+        group = command.add_mutually_exclusive_group()
+        group.add_argument("--address", help="BLE peer address or identifier (omit to listen)")
+        group.add_argument("--scan", action="store_true", help="scan and select a BLE peer")
+        command.add_argument("--timeout", type=float, default=15.0, help="scan duration")
+        command.add_argument("--connect-timeout", type=float, default=60.0,
+                             help="BLE connection timeout in seconds")
+    host.add_argument("--base-url", default="http://127.0.0.1:11434/v1",
+                      help="upstream OpenAI API base URL (default: Ollama)")
+    host.add_argument("--api-key-env", default="GTI_LLM_API_KEY",
+                      help="environment variable containing upstream API key")
+    proxy.add_argument("--port", type=int, default=8765, help="loopback HTTP port")
+    proxy.add_argument("--model", action="append", default=[],
+                       help="model ID to advertise in /v1/models (repeatable)")
+
     return parser
 
 
@@ -403,6 +473,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                 )
             )
         except (ImportError, OSError, RuntimeError) as exc:
+            print(f"gti: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    if args.command in ("llm-host", "llm-proxy"):
+        try:
+            asyncio.run(_run_llm(args))
+        except KeyboardInterrupt:
+            return 0
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
             print(f"gti: {exc}", file=sys.stderr)
             return 1
         return 0

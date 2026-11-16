@@ -195,6 +195,27 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class TestCallCleanup(unittest.IsolatedAsyncioTestCase):
+    async def test_ack_timeout_cancels_remote_handler(self) -> None:
+        peer_a, peer_b = _make_peers()
+        cancelled = asyncio.Event()
+
+        async def handler(payload: bytes, ctx: RequestContext) -> None:
+            try:
+                await asyncio.sleep(60)
+            finally:
+                cancelled.set()
+
+        peer_b.register(42, handler)
+        async with peer_a, peer_b:
+            with self.assertRaises(asyncio.TimeoutError):
+                async for _ in peer_a.call(42, b"", timeout=0.05):
+                    pass
+            await asyncio.wait_for(cancelled.wait(), 1)
+            self.assertFalse(peer_a._client_pending)
+            self.assertFalse(peer_b._server_inflight)
+
+
 class TestDisconnect(unittest.IsolatedAsyncioTestCase):
     async def test_transport_close_fails_pending_call(self) -> None:
         peer_a, peer_b = _make_peers()

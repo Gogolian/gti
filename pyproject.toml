@@ -36,7 +36,8 @@ windows = [
     "winrt-Windows.Devices.Bluetooth.GenericAttributeProfile>=2.0; sys_platform=='win32'",
     "winrt-Windows.Storage.Streams>=2.0; sys_platform=='win32'",
 ]
-dev = ["mypy>=1.0"]
+llm = ["aiohttp>=3.9,<4"]
+dev = ["mypy>=1.0,<1.19", "aiohttp>=3.9,<4"]
 
 [project.scripts]
 gti = "gti.cli:main"
