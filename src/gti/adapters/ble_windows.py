@@ -255,7 +255,7 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
     except Exception:
         session = None
 
-    services_result = await device.get_gatt_services_for_uuid_async(
+    services_result = await device.get_gatt_services_for_uuid_with_cache_mode_async(
         service_uuid, BluetoothCacheMode.UNCACHED
     )
     if services_result.status != 0 or not services_result.services:
@@ -263,10 +263,10 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
         return
     service = services_result.services[0]
 
-    rx_result = await service.get_characteristics_for_uuid_async(
+    rx_result = await service.get_characteristics_for_uuid_with_cache_mode_async(
         rx_uuid, BluetoothCacheMode.UNCACHED
     )
-    tx_result = await service.get_characteristics_for_uuid_async(
+    tx_result = await service.get_characteristics_for_uuid_with_cache_mode_async(
         tx_uuid, BluetoothCacheMode.UNCACHED
     )
     if not rx_result.characteristics or not tx_result.characteristics:
