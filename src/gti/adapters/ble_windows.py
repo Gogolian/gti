@@ -159,7 +159,15 @@ async def _run_peripheral(conn: Connection) -> None:
     advertising = GattServiceProviderAdvertisingParameters()
     advertising.is_connectable = True
     advertising.is_discoverable = True
-    provider.start_advertising(advertising)
+    try:
+        advertising.use_low_energy_uncoded_2m_phy_as_secondary_phy = True
+    except Exception:
+        pass
+    try:
+        provider.start_advertising(advertising)
+    except TypeError:
+        # PyWinRT v3 exposed the parameterized overload under this name.
+        provider.start_advertising_with_parameters(advertising)
     _send_control(conn, type="ready", role="listen")
 
     async def _on_frame(frame: bytes) -> None:
@@ -357,7 +365,7 @@ async def _scan_main(conn: Connection, timeout: float) -> None:
             type="scan_result",
             name=f"{name} ({mac})",
             address=str(address),
-            rssi=int(args.rssi or 0),
+            rssi=int(args.raw_signal_strength_in_dbm or 0),
         )
 
     watcher.add_received(_received)
