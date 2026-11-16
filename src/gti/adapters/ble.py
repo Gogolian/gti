@@ -422,7 +422,7 @@ class BLETransport(Transport):
         *,
         role: str = "listen",
         target: Optional[str] = None,
-        timeout: float = 60.0,
+        timeout: float = 180.0,
     ) -> None:
         super().__init__()
         _require_ble_supported()

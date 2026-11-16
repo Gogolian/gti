@@ -224,7 +224,7 @@ async def _run_chat(
     scan: bool = False,
     scan_timeout: float = 15.0,
     transport: Optional[str] = None,
-    connect_timeout: float = 60.0,
+    connect_timeout: float = 180.0,
 ) -> None:
     """Open a connection (dial or listen) and run the unified session."""
     from .address import normalize_address
@@ -255,7 +255,7 @@ async def _run_chat(
             print(f"Connecting to BLE device {address} …", flush=True)
             role = "client"
         else:
-            transport_obj = BLETransport(role="listen")
+            transport_obj = BLETransport(role="listen", timeout=connect_timeout)
             print("Waiting for BLE connection …", flush=True)
             role = "server"
         await _run_session(transport_obj, role=role, receive_dir=receive_dir)
@@ -400,8 +400,8 @@ def _build_parser() -> argparse.ArgumentParser:
     chat.add_argument(
         "--connect-timeout",
         type=float,
-        default=60.0,
-        help="seconds to wait for a BLE connection",
+        default=180.0,
+        help="seconds to wait for a BLE connection (default: 180)",
     )
     chat.add_argument(
         "--transport",
@@ -429,8 +429,8 @@ def _build_parser() -> argparse.ArgumentParser:
         group.add_argument("--address", help="BLE peer address or identifier (omit to listen)")
         group.add_argument("--scan", action="store_true", help="scan and select a BLE peer")
         command.add_argument("--timeout", type=float, default=15.0, help="scan duration")
-        command.add_argument("--connect-timeout", type=float, default=60.0,
-                             help="BLE connection timeout in seconds")
+        command.add_argument("--connect-timeout", type=float, default=180.0,
+                             help="BLE connection timeout in seconds (default: 180)")
     host.add_argument("--base-url", default="http://127.0.0.1:11434/v1",
                       help="upstream OpenAI API base URL (default: Ollama)")
     host.add_argument("--api-key-env", default="GTI_LLM_API_KEY",

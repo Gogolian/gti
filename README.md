@@ -75,7 +75,8 @@ The BLE transport is implemented on macOS and Windows. It uses a GATT service
 with a write characteristic (central → peripheral) and a notify characteristic
 (peripheral → central), and fragments frames into BLE-sized packets. BLE is
 slower than RFCOMM for file transfer; chat is unaffected. Use
-`--connect-timeout N` to wait longer for a BLE peer (default 60s).
+`--connect-timeout N` to wait longer for a BLE peer (default 180s, so an
+advertising host is not dropped while the other side starts up).
 
 ## Run an LLM over BLE
 
@@ -87,7 +88,7 @@ Install the `llm` and appropriate platform extras on **both** machines.
 On the inference machine, advertise and wait for the other machine:
 
 ```bash
-gti llm-host --base-url http://127.0.0.1:11434/v1 --connect-timeout 300
+gti llm-host --base-url http://127.0.0.1:11434/v1
 ```
 
 On the harness machine, scan for the host and expose the model locally:
