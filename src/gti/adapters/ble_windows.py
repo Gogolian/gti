@@ -131,7 +131,7 @@ async def _run_peripheral(conn: Connection) -> None:
                 send_queue.insert(0, packet)
                 return
 
-    async def _on_write(args: Any) -> None:
+    async def _on_write(args: Any, deferral: Any) -> None:
         try:
             request = await args.get_request_async()
             for frame in assembler.feed(_bytes_from_buffer(request.value)):
@@ -140,9 +140,19 @@ async def _run_peripheral(conn: Connection) -> None:
                 request.respond()
         except Exception:
             logger.exception("BLE write request failed")
+        finally:
+            try:
+                deferral.complete()
+            except Exception:
+                pass
 
     def _write_requested(sender: Any, args: Any) -> None:
-        loop.call_soon_threadsafe(lambda: asyncio.create_task(_on_write(args)))
+        # Hold the request open until the async handler has responded;
+        # otherwise Windows commits it as soon as this callback returns.
+        deferral = args.get_deferral()
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(_on_write(args, deferral))
+        )
 
     def _subscribed_changed(sender: Any, args: Any) -> None:
         nonlocal subscribed
