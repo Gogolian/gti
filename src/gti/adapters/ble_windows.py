@@ -201,7 +201,6 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
     from winrt.windows.devices.bluetooth import (
         BluetoothCacheMode,
         BluetoothLEDevice,
-        GattSession,
     )
     from winrt.windows.devices.bluetooth.advertisement import (
         BluetoothLEAdvertisementWatcher,
@@ -209,6 +208,7 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
     )
     from winrt.windows.devices.bluetooth.genericattributeprofile import (
         GattClientCharacteristicConfigurationDescriptorValue,
+        GattSession,
     )
 
     service_uuid = uuid.UUID(BLE_SERVICE_UUID)
