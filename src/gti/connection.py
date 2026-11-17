@@ -298,6 +298,16 @@ class ConnectionManager:
         if self._runner is None or self._runner.done():
             self._runner = asyncio.create_task(self.run())
 
+    async def reconnect(self) -> None:
+        """Close the current link or discovery attempts and start fresh.
+
+        Service preferences stay unchanged; in-flight requests fail when the
+        old peer closes and are not replayed.
+        """
+        await self.stop()
+        self._on_status("Reconnecting…")
+        self.start()
+
     async def stop(self) -> None:
         if self._runner is not None:
             self._runner.cancel()

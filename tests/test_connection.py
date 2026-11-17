@@ -142,13 +142,37 @@ class TestConnectionManager(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(await response.json(), {"echo": "test"})
                 await send()
                 old_a, old_b = self.a.peer, self.b.peer
-                await old_a._transport.close()
+                await self.a.reconnect()
                 await wait_for(lambda: self.a.peer is not None and self.b.peer is not None
                                and self.a.peer is not old_a and self.b.peer is not old_b)
                 await send()
         finally:
             await runner.cleanup()
             await upstream_runner.cleanup()
+
+    async def test_manual_reconnect_keeps_host_enabled(self) -> None:
+        await wait_for(lambda: self.a.peer is not None and self.b.peer is not None)
+        self.a.set_host_inference(True)
+        old_a, old_b = self.a.peer, self.b.peer
+        await self.a.reconnect()
+        self.assertTrue(self.a.host_inference)
+        self.assertTrue(old_a.is_closed)
+        await wait_for(lambda: self.a.peer is not None and self.b.peer is not None
+                       and self.a.peer is not old_a and self.b.peer is not old_b)
+        await wait_for(lambda: self.b.peer_info is not None and self.b.peer_info.host_inference)
+        await self.b.send_chat("after manual reconnect")
+        self.assertIn(("a", "Bob", "after manual reconnect"), self.messages)
+
+    async def test_manual_reconnect_while_discovering(self) -> None:
+        await asyncio.gather(self.a.stop(), self.b.stop())
+        self.a.start()
+        await wait_for(lambda: len(self.radio.waiting) == 2)
+        first_attempts = list(self.radio.waiting.values())
+        await self.a.reconnect()
+        await wait_for(lambda: len(self.radio.waiting) == 2 and
+                       all(t not in first_attempts for t in self.radio.waiting.values()))
+        self.b.start()
+        await wait_for(lambda: self.a.peer is not None and self.b.peer is not None)
 
     async def test_reverse_direction_fallback(self) -> None:
         await asyncio.gather(self.a.stop(), self.b.stop())

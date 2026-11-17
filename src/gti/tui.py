@@ -8,12 +8,35 @@ from typing import Optional
 from aiohttp import web
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal
-from textual.widgets import Footer, Header, Input, RichLog, Static, Switch
+from textual.widgets import Footer, Header, Input, OptionList, RichLog, Static, Switch
 
-from .config import Config, load_config
+from .config import Config, load_config, save_inference_settings
 from .connection import ConnectionManager, PeerInfo
 from .llm_proxy import create_app
+
+
+_RECONNECT = "/reconnect"
+
+
+def _is_command_prefix(value: str) -> bool:
+    return value.startswith("/") and _RECONNECT.startswith(value.lower())
+
+
+class ChatInput(Input):
+    """Complete a visible slash command without stealing normal Tab navigation."""
+
+    BINDINGS = [Binding("tab", "complete_command", show=False, priority=True)]
+
+    def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
+        if action == "complete_command":
+            return _is_command_prefix(self.value)
+        return super().check_action(action, parameters)
+
+    def action_complete_command(self) -> None:
+        self.value = _RECONNECT
+        self.cursor_position = len(self.value)
 
 
 class GTIApp(App[None]):
@@ -28,7 +51,8 @@ class GTIApp(App[None]):
     #services Switch { margin-right: 2; }
     #endpoint { height: 2; padding: 0 1; }
     #messages { height: 1fr; border: round $primary; }
-    #chat { dock: bottom; }
+    #commands { display: none; height: 3; border: round $primary; }
+    #chat { height: 3; }
     """
     BINDINGS = [("ctrl+q", "quit", "Quit")]
 
@@ -51,17 +75,22 @@ class GTIApp(App[None]):
         yield Static("Private networks only: GTI peers are not authenticated or encrypted.", id="warning")
         with Horizontal(id="services"):
             yield Static("Host inference")
-            yield Switch(value=False, id="host")
+            yield Switch(value=self.config.host_inference, id="host")
             yield Static("Use peer inference")
-            yield Switch(value=False, id="use")
+            yield Switch(value=self.config.use_inference, id="use")
         yield Static("Inference proxy: off", id="endpoint")
         yield RichLog(id="messages", wrap=True, markup=False, highlight=False)
-        yield Input(placeholder="Message peer and press Enter", id="chat")
+        yield OptionList("/reconnect    Restart BLE connection  [Tab to complete]", id="commands")
+        yield ChatInput(placeholder="Message peer or type / for commands", id="chat")
         yield Footer()
 
-    def on_mount(self) -> None:
+    async def on_mount(self) -> None:
         self._ui_ready = True
         self.query_one("#chat", Input).focus()
+        if self.config.host_inference and not self._set_host(True):
+            self._reset_switch("host")
+        if self.config.use_inference and not await self._set_proxy(True):
+            self._reset_switch("use")
         self.manager.start()
 
     async def on_unmount(self) -> None:
@@ -89,9 +118,28 @@ class GTIApp(App[None]):
         if self._ui_ready:
             self.query_one("#messages", RichLog).write(Text(f"{name}: {message}"))
 
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "chat":
+            self.query_one("#commands", OptionList).display = _is_command_prefix(event.value)
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        if event.option_list.id == "commands":
+            chat = self.query_one("#chat", ChatInput)
+            chat.value = _RECONNECT
+            chat.cursor_position = len(chat.value)
+            chat.focus()
+
     async def on_input_submitted(self, event: Input.Submitted) -> None:
         message = event.value.strip()
         if not message:
+            return
+        if message.startswith("/"):
+            if len(message) > 1 and _is_command_prefix(message):
+                event.input.value = ""
+                self.query_one("#messages", RichLog).write(Text("Reconnecting…"))
+                await self.manager.reconnect()
+            else:
+                self.query_one("#messages", RichLog).write(Text(f"Unknown command: {message}"))
             return
         try:
             await self.manager.send_chat(message)
@@ -101,37 +149,63 @@ class GTIApp(App[None]):
         event.input.value = ""
         self.query_one("#messages", RichLog).write(Text(f"{self.config.name}: {message}"))
 
+    def _reset_switch(self, name: str) -> None:
+        switch = self.query_one(f"#{name}", Switch)
+        with switch.prevent(Switch.Changed):
+            switch.value = False
+
+    def _set_host(self, enabled: bool) -> bool:
+        try:
+            self.manager.set_host_inference(enabled)
+            return True
+        except (ValueError, ImportError) as exc:
+            self.query_one("#messages", RichLog).write(Text(f"Cannot host inference: {exc}"))
+            return False
+
+    async def _set_proxy(self, enabled: bool) -> bool:
+        self._use_inference = enabled
+        async with self._proxy_lock:
+            if enabled and self._proxy_runner is None:
+                runner = web.AppRunner(
+                    create_app(lambda: self.manager.peer if self._use_inference else None),
+                    handler_cancellation=True,
+                )
+                try:
+                    await runner.setup()
+                    await web.TCPSite(runner, "127.0.0.1", self.config.inference_port).start()
+                except (OSError, ValueError) as exc:
+                    await runner.cleanup()
+                    self._use_inference = False
+                    self.query_one("#messages", RichLog).write(Text(f"Cannot start proxy: {exc}"))
+                    return False
+                self._proxy_runner = runner
+            elif not enabled and self._proxy_runner is not None:
+                await self._proxy_runner.cleanup()
+                self._proxy_runner = None
+            endpoint = (f"Inference proxy: http://127.0.0.1:{self.config.inference_port}/v1"
+                        if self._proxy_runner is not None else "Inference proxy: off")
+            self.query_one("#endpoint", Static).update(Text(endpoint))
+        return True
+
     async def on_switch_changed(self, event: Switch.Changed) -> None:
         if event.switch.id == "host":
-            try:
-                self.manager.set_host_inference(event.value)
-            except (ValueError, ImportError) as exc:
-                self.query_one("#messages", RichLog).write(Text(f"Cannot host inference: {exc}"))
-                event.switch.value = False
+            if not self._set_host(event.value):
+                self._reset_switch("host")
+                return
+            settings = {"host_inference": event.value}
         elif event.switch.id == "use":
-            self._use_inference = event.value
-            async with self._proxy_lock:
-                if self._use_inference and self._proxy_runner is None:
-                    runner = web.AppRunner(
-                        create_app(lambda: self.manager.peer if self._use_inference else None),
-                        handler_cancellation=True,
-                    )
-                    try:
-                        await runner.setup()
-                        await web.TCPSite(runner, "127.0.0.1", self.config.inference_port).start()
-                    except (OSError, ValueError) as exc:
-                        await runner.cleanup()
-                        self._use_inference = False
-                        event.switch.value = False
-                        self.query_one("#messages", RichLog).write(Text(f"Cannot start proxy: {exc}"))
-                        return
-                    self._proxy_runner = runner
-                elif not self._use_inference and self._proxy_runner is not None:
-                    await self._proxy_runner.cleanup()
-                    self._proxy_runner = None
-                endpoint = (f"Inference proxy: http://127.0.0.1:{self.config.inference_port}/v1"
-                            if self._proxy_runner is not None else "Inference proxy: off")
-                self.query_one("#endpoint", Static).update(Text(endpoint))
+            if not await self._set_proxy(event.value):
+                self._reset_switch("use")
+                return
+            settings = {"use_inference": event.value}
+        else:
+            return
+        try:
+            save_inference_settings(self.config, **settings)
+        except (OSError, ValueError) as exc:
+            self.query_one("#messages", RichLog).write(
+                Text(f"Could not save inference setting; change will not persist: {exc}")
+            )
 
 
 def run_tui(config_path: Optional[Path] = None) -> None:

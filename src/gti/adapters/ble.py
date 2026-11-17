@@ -49,6 +49,42 @@ def _require_ble_supported() -> None:
         )
 
 
+class _StderrWithoutFileno:
+    """Delegate to a redirected stderr without exposing its invalid fd.
+
+    Textual's redirected stream reports ``fileno() == -1``. On POSIX,
+    multiprocessing's resource tracker passes that value to fork_exec, which
+    rejects it. Raising instead makes the tracker omit stderr as intended.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def fileno(self) -> int:
+        raise OSError("redirected stderr has no file descriptor")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._stream, name)
+
+
+def _start_process(proc: Any) -> None:
+    """Start a helper even if the active TUI redirects stderr to fd -1."""
+    stderr = sys.stderr
+    try:
+        fd = stderr.fileno()
+    except Exception:
+        fd = None  # multiprocessing already handles an unavailable fileno
+    replacement: Optional[_StderrWithoutFileno] = None
+    if isinstance(fd, int) and fd < 0:
+        replacement = _StderrWithoutFileno(stderr)
+        sys.stderr = replacement
+    try:
+        proc.start()
+    finally:
+        if replacement is not None and sys.stderr is replacement:
+            sys.stderr = stderr
+
+
 def _send_control(conn: Connection, **payload: Any) -> None:
     conn.send_bytes(b"C" + json.dumps(payload).encode())
 
@@ -489,8 +525,13 @@ class BLETransport(Transport):
             args=(child_conn, self._role, self._target, self._exclude),
             daemon=True,
         )
-        proc.start()
-        child_conn.close()
+        try:
+            _start_process(proc)
+        except BaseException:
+            parent_conn.close()
+            raise
+        finally:
+            child_conn.close()
         self._conn = parent_conn
         self._proc = proc
         self._opened_future = loop.create_future()
@@ -620,8 +661,13 @@ async def discover_ble(timeout: float = 15.0) -> List[Device]:
         args=(child_conn, timeout),
         daemon=True,
     )
-    proc.start()
-    child_conn.close()
+    try:
+        _start_process(proc)
+    except BaseException:
+        parent_conn.close()
+        raise
+    finally:
+        child_conn.close()
     devices: List[Device] = []
     deadline = time.monotonic() + timeout + 5
 

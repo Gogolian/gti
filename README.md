@@ -57,7 +57,9 @@ On first launch GTI creates `~/.config/gti/config.json` (or
   "device_id": "generated-on-first-start",
   "inference_url": "http://127.0.0.1:11434/v1",
   "inference_port": 8765,
-  "api_key_env": "GTI_LLM_API_KEY"
+  "api_key_env": "GTI_LLM_API_KEY",
+  "host_inference": false,
+  "use_inference": false
 }
 ```
 
@@ -66,17 +68,22 @@ The example ID is a placeholder: keep the generated UUID hex string, and use
 `gti tui --config PATH` to select a different file. If the upstream needs a key,
 set the named environment variable on the host; do not put it in the config.
 
-Type a message and press Enter. Toggle **Host inference** on the machine with
-the model; toggle **Use peer inference** on the other to start the displayed
-local OpenAI-compatible endpoint. Both switches start off. The local endpoint
-stays up across disconnects and returns HTTP 503 when there is no peer.
-In-flight requests fail on disconnect and are not replayed. Chat has no offline
-queue or history; file transfer is not in this TUI. Ctrl+Q quits.
+Type a message and press Enter. Enter `/reconnect` (or `/r`) to disconnect and
+restart discovery; type `/` to see command suggestions and press Tab to complete.
+Toggle **Host inference** on the machine with the model; toggle **Use peer
+inference** on the other to start the displayed local OpenAI-compatible
+endpoint. Switches default to off and are saved in the config when changed, so
+hosting and proxying resume automatically on the next launch. If a saved proxy
+cannot bind its port, the TUI reports the error and retries on the next launch.
+The local endpoint stays up across disconnects and returns HTTP 503 when there
+is no peer. In-flight requests fail on disconnect and are not replayed. Chat
+has no offline queue or history; file transfer is not in this TUI. Ctrl+Q quits.
 
 **Private environments only:** automatic connections have no GTI authentication
 or application-layer encryption. Names and device IDs can be impersonated. A
 nearby peer may read chat and prompts or use inference when hosting is enabled.
-The proxy binds to loopback but other local processes can use it.
+A saved **Host inference** switch enables hosting again on startup. The proxy
+binds to loopback but other local processes can use it.
 
 ## Legacy commands
 
