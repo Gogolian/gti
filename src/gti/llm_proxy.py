@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import List, Optional, Tuple
+from typing import Callable, List, Optional, Tuple, Union
 
 from aiohttp import web
 
@@ -14,7 +14,7 @@ from .telemetry import TrafficMeter
 
 
 def create_app(
-    peer: Peer,
+    peer: Union[Peer, Callable[[], Optional[Peer]]],
     models: Optional[List[str]] = None,
     *,
     meter: Optional[TrafficMeter] = None,
@@ -29,28 +29,40 @@ def create_app(
     app = web.Application(client_max_size=MAX_REQUEST_SIZE)
     model_ids = list(models or [])
     cached_models: Optional[Tuple[str, bytes]] = None
+    cached_peer: Optional[Peer] = None
+
+    def current_peer() -> Peer:
+        selected = peer() if callable(peer) else peer
+        if selected is None or selected.is_closed:
+            raise web.HTTPServiceUnavailable(text="GTI inference peer is unavailable")
+        return selected
 
     async def list_models(request: web.Request) -> web.Response:
-        nonlocal cached_models
+        nonlocal cached_models, cached_peer
         if "Origin" in request.headers:
             raise web.HTTPForbidden(text="browser origins are not supported")
+        selected = current_peer()
+        if cached_peer is not selected:
+            cached_models = None
+            cached_peer = selected
         if model_ids:
             return web.json_response({"object": "list", "data": [
                 {"id": model, "object": "model", "owned_by": "gti"} for model in model_ids
             ]})
         try:
-            status, content_type, body = await relay_models(peer)
+            status, content_type, body = await relay_models(selected)
             if not 200 <= status < 300:
                 raise RelayError(f"upstream model list returned HTTP {status}")
             if not content_type.lower().startswith("application/json"):
                 raise RelayError("upstream model list is not JSON")
             json.loads(body)
-            cached_models = (content_type, body)
+            if cached_peer is selected:
+                cached_models = (content_type, body)
             return web.Response(body=body, status=status,
                                 headers={"Content-Type": content_type})
         except (RelayError, RemoteError, NotSupportedError, ConnectionError,
                 asyncio.TimeoutError, ValueError) as exc:
-            if cached_models is not None:
+            if cached_peer is selected and cached_models is not None:
                 content_type, body = cached_models
                 return web.Response(body=body, headers={"Content-Type": content_type})
             return web.json_response(
@@ -63,6 +75,7 @@ def create_app(
             raise web.HTTPForbidden(text="browser origins are not supported")
         if request.content_type != "application/json":
             raise web.HTTPUnsupportedMediaType(text="expected application/json")
+        selected = current_peer()
         body = await request.read()
         try:
             if not isinstance(json.loads(body), dict):
@@ -71,7 +84,7 @@ def create_app(
             raise web.HTTPBadRequest(text="expected a JSON object") from None
 
         response: Optional[web.StreamResponse] = None
-        records = relay(peer, body, meter=meter)
+        records = relay(selected, body, meter=meter)
         task = asyncio.current_task()
 
         async def watch_disconnect() -> None:

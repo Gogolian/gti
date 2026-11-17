@@ -32,6 +32,28 @@ BLE_TX_UUID = "e6031152-a17a-4f76-9aa5-cba1b4321dc2"
 _DEFAULT_PAYLOAD = 180
 
 
+def _notification_payload(client: Any) -> int:
+    """Use the subscriber's negotiated notification size when available."""
+    try:
+        size = int(client.max_notification_size)
+        if size >= 4:
+            return min(512, size)
+    except (AttributeError, TypeError, ValueError, OSError):
+        pass
+    return _DEFAULT_PAYLOAD
+
+
+def _write_payload(session: Any) -> int:
+    """ATT writes consume three bytes of the negotiated GATT PDU."""
+    try:
+        size = int(session.max_pdu_size) - 3
+        if size >= 4:
+            return min(512, size)
+    except (AttributeError, TypeError, ValueError, OSError):
+        pass
+    return _DEFAULT_PAYLOAD
+
+
 def _send_control(conn: Connection, **payload: Any) -> None:
     conn.send_bytes(b"C" + json.dumps(payload).encode())
 
@@ -124,9 +146,17 @@ async def _run_peripheral(conn: Connection) -> None:
 
     async def _flush() -> None:
         while send_queue:
+            clients = list(tx.subscribed_clients)
+            if len(clients) != 1:
+                return
             packet = send_queue.pop(0)
             try:
-                await tx.notify_value_async(_buffer_from_bytes(packet))
+                # Target the chosen subscriber, including if another central
+                # subscribes between checking the list and sending.
+                if hasattr(tx, "notify_value_for_subscribed_client_async"):
+                    await tx.notify_value_for_subscribed_client_async(_buffer_from_bytes(packet), clients[0])
+                else:
+                    await tx.notify_value_async(_buffer_from_bytes(packet), clients[0])
             except Exception:
                 send_queue.insert(0, packet)
                 return
@@ -134,6 +164,18 @@ async def _run_peripheral(conn: Connection) -> None:
     async def _on_write(args: Any, deferral: Any) -> None:
         try:
             request = await args.get_request_async()
+            # Do not merge fragments from another device, even if it writes
+            # without subscribing to our notifications first.
+            clients = list(tx.subscribed_clients)
+            try:
+                same_device = (len(clients) == 1 and
+                               args.session.device_id.id == clients[0].session.device_id.id)
+            except (AttributeError, OSError):
+                same_device = False
+            if not same_device:
+                if request.option == GattWriteOption.WRITE_WITH_RESPONSE:
+                    request.respond_with_protocol_error(0x0E)
+                return
             for frame in assembler.feed(_bytes_from_buffer(request.value)):
                 conn.send_bytes(b"D" + frame)
             if request.option == GattWriteOption.WRITE_WITH_RESPONSE:
@@ -155,17 +197,23 @@ async def _run_peripheral(conn: Connection) -> None:
         )
 
     def _subscribed_changed(sender: Any, args: Any) -> None:
-        nonlocal subscribed
-        try:
-            clients = list(tx.subscribed_clients)
-        except Exception:
-            clients = []
-        if clients and not subscribed:
-            subscribed = True
-            _send_control(conn, type="opened", role="listen")
-        elif not clients and subscribed:
-            subscribed = False
-            _send_control(conn, type="closed")
+        def update() -> None:
+            nonlocal subscribed
+            try:
+                clients = list(tx.subscribed_clients)
+            except Exception:
+                clients = []
+            if len(clients) > 1:
+                provider.stop_advertising()
+                _send_control(conn, type="error", message="multiple BLE centrals are not supported")
+            elif clients and not subscribed:
+                subscribed = True
+                provider.stop_advertising()
+                _send_control(conn, type="opened", role="listen")
+            elif not clients and subscribed:
+                subscribed = False
+                _send_control(conn, type="closed")
+        loop.call_soon_threadsafe(update)
 
     rx.add_write_requested(_write_requested)
     tx.add_subscribed_clients_changed(_subscribed_changed)
@@ -185,7 +233,9 @@ async def _run_peripheral(conn: Connection) -> None:
     _send_control(conn, type="ready", role="listen")
 
     async def _on_frame(frame: bytes) -> None:
-        send_queue.extend(fragment_frame(frame, max_payload))
+        clients = list(tx.subscribed_clients)
+        size = _notification_payload(clients[0]) if len(clients) == 1 else max_payload
+        send_queue.extend(fragment_frame(frame, size))
         await _flush()
 
     try:
@@ -197,9 +247,11 @@ async def _run_peripheral(conn: Connection) -> None:
             pass
 
 
-async def _run_central(conn: Connection, target: Optional[str]) -> None:
+async def _run_central(conn: Connection, target: Optional[str],
+                       exclude: Optional[List[str]] = None) -> None:
     from winrt.windows.devices.bluetooth import (
         BluetoothCacheMode,
+        BluetoothConnectionStatus,
         BluetoothLEDevice,
     )
     from winrt.windows.devices.bluetooth.advertisement import (
@@ -226,6 +278,8 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
         address = args.bluetooth_address
         name = args.advertisement.local_name or ""
         mac = _address_to_mac(address)
+        if mac.lower() in (exclude or []):
+            return
         uuids = {str(u).lower() for u in (args.advertisement.service_uuids or [])}
         if BLE_SERVICE_UUID not in uuids:
             return
@@ -249,6 +303,7 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
     finally:
         watcher.stop()
 
+    _send_control(conn, type="target", address=_address_to_mac(address))
     device = await BluetoothLEDevice.from_bluetooth_address_async(address)
     if device is None:
         _send_control(conn, type="error", message="BLE device not found")
@@ -315,10 +370,20 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
     await tx.write_client_characteristic_configuration_descriptor_async(
         GattClientCharacteristicConfigurationDescriptorValue.NOTIFY
     )
+    # WinRT can lose a link while the local pipe is idle. Notify the parent
+    # instead of waiting for the next write; heartbeats provide a fallback.
+    def _connection_changed(sender: Any, args: Any) -> None:
+        def update() -> None:
+            if device.connection_status == BluetoothConnectionStatus.DISCONNECTED:
+                _send_control(conn, type="closed")
+        loop.call_soon_threadsafe(update)
+
+    device.add_connection_status_changed(_connection_changed)
     _send_control(conn, type="opened", role="connect")
 
     async def _on_frame(frame: bytes) -> None:
-        write_queue.extend(fragment_frame(frame, max_payload))
+        size = _write_payload(session) if session is not None else max_payload
+        write_queue.extend(fragment_frame(frame, size))
         await _flush()
 
     try:
@@ -335,12 +400,13 @@ async def _run_central(conn: Connection, target: Optional[str]) -> None:
                 pass
 
 
-async def _windows_main(conn: Connection, role: str, target: Optional[str]) -> None:
+async def _windows_main(conn: Connection, role: str, target: Optional[str],
+                        exclude: Optional[List[str]] = None) -> None:
     try:
         if role == "listen":
             await _run_peripheral(conn)
         else:
-            await _run_central(conn, target)
+            await _run_central(conn, target, exclude)
     except Exception as exc:
         logger.exception("Windows BLE transport failed")
         try:
@@ -354,8 +420,9 @@ async def _windows_main(conn: Connection, role: str, target: Optional[str]) -> N
             pass
 
 
-def ble_process_windows(conn: Connection, role: str, target: Optional[str]) -> None:
-    asyncio.run(_windows_main(conn, role, target))
+def ble_process_windows(conn: Connection, role: str, target: Optional[str],
+                        exclude: Optional[List[str]] = None) -> None:
+    asyncio.run(_windows_main(conn, role, target, exclude))
 
 
 async def _scan_main(conn: Connection, timeout: float) -> None:

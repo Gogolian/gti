@@ -53,6 +53,18 @@ if __name__ == "__main__":
 
 
 class TestWindowsAddress(unittest.TestCase):
+    def test_negotiated_payload_sizes(self) -> None:
+        from types import SimpleNamespace
+        from gti.adapters.ble_windows import _notification_payload, _write_payload
+
+        self.assertEqual(_notification_payload(SimpleNamespace(max_notification_size=20)), 20)
+        self.assertEqual(_notification_payload(SimpleNamespace(max_notification_size=400)), 400)
+        self.assertEqual(_notification_payload(SimpleNamespace(max_notification_size=900)), 512)
+        self.assertEqual(_notification_payload(object()), 180)
+        self.assertEqual(_write_payload(SimpleNamespace(max_pdu_size=23)), 20)
+        self.assertEqual(_write_payload(SimpleNamespace(max_pdu_size=247)), 244)
+        self.assertEqual(_write_payload(object()), 180)
+
     def test_address_to_mac(self) -> None:
         from gti.adapters.ble_windows import _address_to_mac
 

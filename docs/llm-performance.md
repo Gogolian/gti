@@ -29,6 +29,13 @@ Compression saves link bandwidth; it does not speed up the inference server.
 When generation is slower than the link, expect similar completion time with
 fewer packets, not a large tokens/second improvement.
 
+The automatic TUI uses the same LLM relay protocol and flow control. On Windows,
+BLE fragments use the current GATT session's negotiated write PDU size and the
+subscriber's maximum notification size when available (capped at 512 bytes);
+the previous 180-byte fallback is retained when those values are unavailable.
+This can reduce packet count on a larger MTU, but must be measured on physical
+hardware in both directions before claiming a throughput improvement.
+
 ## Reproduce without hardware
 
 Install the `llm` extra, then run from the repository root:

@@ -59,7 +59,8 @@ def _as_bytes(value: Any) -> bytes:
     return bytes(value)
 
 
-def _ble_process(conn: Connection, role: str, target: Optional[str]) -> None:
+def _ble_process(conn: Connection, role: str, target: Optional[str],
+                 exclude: Optional[List[str]] = None) -> None:
     """Child process: run CoreBluetooth on the main thread and proxy frames."""
     import CoreBluetooth as CB  # type: ignore
     from Foundation import NSDate, NSObject, NSRunLoop  # type: ignore
@@ -80,6 +81,10 @@ def _ble_process(conn: Connection, role: str, target: Optional[str]) -> None:
             if manager.state() != CB.CBPeripheralManagerStatePoweredOn:
                 if manager.state() == CB.CBPeripheralManagerStatePoweredOff:
                     _send_control(conn, type="error", message="Bluetooth is off")
+                elif manager.state() == CB.CBPeripheralManagerStateUnauthorized:
+                    _send_control(conn, type="error", message="Bluetooth permission denied")
+                elif manager.state() == CB.CBPeripheralManagerStateUnsupported:
+                    _send_control(conn, type="error", message="BLE peripheral role is unsupported")
                 return
             service = CB.CBMutableService.alloc().initWithType_primary_(
                 service_uuid, True
@@ -128,20 +133,32 @@ def _ble_process(conn: Connection, role: str, target: Optional[str]) -> None:
             self, manager: Any, requests: Any
         ) -> None:
             for request in requests:
+                # A transport is one peer, never a shared broadcast channel.
+                # Writes from an unsubscribed/second central must not share its
+                # frame assembler with the selected connection.
+                central = request.central()
+                if not self.centrals or central != self.centrals[0]:
+                    manager.respondToRequest_withResult_(
+                        request, CB.CBATTErrorUnlikelyError
+                    )
+                    continue
                 characteristic = request.characteristic()
                 if characteristic.UUID().UUIDString().lower() == BLE_RX_UUID:
                     for frame in self.assembler.feed(_as_bytes(request.value())):
                         conn.send_bytes(b"D" + frame)
-                manager.respondToRequest_withResult_(
-                    request, CB.CBATTErrorSuccess
-                )
+                manager.respondToRequest_withResult_(request, CB.CBATTErrorSuccess)
 
         def peripheralManager_central_didSubscribeToCharacteristic_(
             self, manager: Any, central: Any, characteristic: Any
         ) -> None:
             if characteristic.UUID().UUIDString().lower() != BLE_TX_UUID:
                 return
+            if self.centrals:
+                # Fail closed if another central raced the first subscription.
+                _send_control(conn, type="error", message="multiple BLE centrals are not supported")
+                return
             self.centrals.append(central)
+            manager.stopAdvertising()
             try:
                 length = int(central.maximumUpdateValueLength())
             except Exception:
@@ -164,7 +181,7 @@ def _ble_process(conn: Connection, role: str, target: Optional[str]) -> None:
             while self.send_queue and self.centrals:
                 packet = self.send_queue[0]
                 ok = self.manager.updateValue_forCharacteristic_onSubscribedCentrals_(
-                    packet, self.tx, None
+                    packet, self.tx, [self.centrals[0]]
                 )
                 if not ok:
                     return
@@ -181,6 +198,10 @@ def _ble_process(conn: Connection, role: str, target: Optional[str]) -> None:
             if manager.state() != CB.CBCentralManagerStatePoweredOn:
                 if manager.state() == CB.CBCentralManagerStatePoweredOff:
                     _send_control(conn, type="error", message="Bluetooth is off")
+                elif manager.state() == CB.CBCentralManagerStateUnauthorized:
+                    _send_control(conn, type="error", message="Bluetooth permission denied")
+                elif manager.state() == CB.CBCentralManagerStateUnsupported:
+                    _send_control(conn, type="error", message="BLE central role is unsupported")
                 return
             manager.scanForPeripheralsWithServices_options_(
                 [service_uuid], None
@@ -195,6 +216,8 @@ def _ble_process(conn: Connection, role: str, target: Optional[str]) -> None:
                 CB.CBAdvertisementDataLocalNameKey, ""
             )
             identifier = peripheral.identifier().UUIDString()
+            if identifier.lower() in (exclude or []):
+                return
             if target and target.lower() not in (
                 identifier.lower(),
                 str(name).lower(),
@@ -202,6 +225,7 @@ def _ble_process(conn: Connection, role: str, target: Optional[str]) -> None:
                 return
             self.peripheral = peripheral
             manager.stopScan()
+            _send_control(conn, type="target", address=identifier)
             peripheral.setDelegate_(self)
             manager.connectPeripheral_options_(peripheral, None)
 
@@ -372,6 +396,10 @@ def _ble_scan_process(conn: Connection, timeout: float) -> None:
                 )
             elif manager.state() == CB.CBCentralManagerStatePoweredOff:
                 _send_control(conn, type="error", message="Bluetooth is off")
+            elif manager.state() == CB.CBCentralManagerStateUnauthorized:
+                _send_control(conn, type="error", message="Bluetooth permission denied")
+            elif manager.state() == CB.CBCentralManagerStateUnsupported:
+                _send_control(conn, type="error", message="BLE central role is unsupported")
 
         def centralManager_didDiscoverPeripheral_advertisementData_RSSI_(
             self, manager: Any, peripheral: Any, data: Any, rssi: Any
@@ -423,6 +451,7 @@ class BLETransport(Transport):
         role: str = "listen",
         target: Optional[str] = None,
         timeout: float = 180.0,
+        exclude: Optional[List[str]] = None,
     ) -> None:
         super().__init__()
         _require_ble_supported()
@@ -430,6 +459,8 @@ class BLETransport(Transport):
             raise ValueError("role must be 'listen' or 'connect'")
         self._role = role
         self._target = target
+        self._exclude = [address.lower() for address in (exclude or [])]
+        self.remote_address: Optional[str] = None
         self._timeout = timeout
         self._conn: Optional[Connection] = None
         self._proc: Optional[Any] = None
@@ -455,7 +486,7 @@ class BLETransport(Transport):
             target = _ble_process
         proc = ctx.Process(
             target=target,
-            args=(child_conn, self._role, self._target),
+            args=(child_conn, self._role, self._target, self._exclude),
             daemon=True,
         )
         proc.start()
@@ -498,7 +529,9 @@ class BLETransport(Transport):
                 except ValueError:
                     continue
                 kind = message.get("type")
-                if kind == "opened":
+                if kind == "target":
+                    self.remote_address = str(message.get("address", "")) or None
+                elif kind == "opened":
                     future = self._opened_future
                     if future is not None and not future.done():
                         future.set_result(None)

@@ -19,8 +19,9 @@ a model running on one machine to an agent harness on the other.
 | Connection | `gti.transport`, `gti.adapters` | Frame-oriented byte pipe: RFCOMM, BLE, and an in-memory loopback. |
 | Wire protocol | `gti.protocol` | gti's `Envelope`: version, kind, status, flags, service id, request id, sequence, payload. |
 | Peer | `gti.peer` | One symmetric peer per connection: multiplexes requests, routes acks/events by request id, dispatches inbound requests to services, and fails in-flight work when the link drops. |
+| Connection manager | `gti.connection` | Single-peer BLE discovery, handshake, connection arbitration, health checks and reconnection. |
 | Services | `gti.services` | Chat, file transfer, and a flow-controlled LLM HTTP relay. |
-| CLI | `gti.cli` | Loopback demo, interactive chat, and LLM host/proxy commands. |
+| Interface | `gti.tui`, `gti.cli` | Automatic BLE TUI and legacy demo, chat and LLM commands. |
 
 The radio layer is the only part that needs Bluetooth. Everything above it is
 pure Python and is exercised end-to-end over the in-memory loopback, so the
@@ -29,7 +30,7 @@ protocol and services can be tested without hardware.
 ## Install
 
 ```bash
-python3 -m pip install -e .            # core library + in-memory loopback (no radio deps)
+python3 -m pip install -e .            # TUI, services and in-memory loopback (no radio deps)
 python3 -m pip install -e ".[macos]"   # + pyobjc, for RFCOMM/BLE on macOS
 python3 -m pip install -e ".[windows]" # + WinRT, for BLE on Windows
 python3 -m pip install -e ".[llm,macos]"   # LLM relay + macOS BLE
@@ -39,7 +40,45 @@ python3 -m pip install -e ".[llm,windows]" # LLM relay + Windows BLE
 RFCOMM on Linux and Windows uses the standard-library socket API. Bluetooth
 Classic RFCOMM requires the two devices to be paired first.
 
-## Usage
+## Automatic BLE TUI
+
+Install the macOS or Windows extra above on **both** machines, then run `gti`
+(or `gti tui`) on each. GTI scans and advertises concurrently, connects one peer,
+and retries after a disconnect. Both machines must use this new TUI protocol;
+it does not connect to the legacy `gti chat` / `llm-host` / `llm-proxy` commands.
+The simultaneous-role and reconnect paths need validation on the actual radios.
+
+On first launch GTI creates `~/.config/gti/config.json` (or
+`$XDG_CONFIG_HOME/gti/config.json`). Edit `name` for the chat display name:
+
+```json
+{
+  "name": "Kamil",
+  "device_id": "generated-on-first-start",
+  "inference_url": "http://127.0.0.1:11434/v1",
+  "inference_port": 8765,
+  "api_key_env": "GTI_LLM_API_KEY"
+}
+```
+
+The example ID is a placeholder: keep the generated UUID hex string, and use
+**separate config files on each device**. Use `gti --config PATH` or
+`gti tui --config PATH` to select a different file. If the upstream needs a key,
+set the named environment variable on the host; do not put it in the config.
+
+Type a message and press Enter. Toggle **Host inference** on the machine with
+the model; toggle **Use peer inference** on the other to start the displayed
+local OpenAI-compatible endpoint. Both switches start off. The local endpoint
+stays up across disconnects and returns HTTP 503 when there is no peer.
+In-flight requests fail on disconnect and are not replayed. Chat has no offline
+queue or history; file transfer is not in this TUI. Ctrl+Q quits.
+
+**Private environments only:** automatic connections have no GTI authentication
+or application-layer encryption. Names and device IDs can be impersonated. A
+nearby peer may read chat and prompts or use inference when hosting is enabled.
+The proxy binds to loopback but other local processes can use it.
+
+## Legacy commands
 
 ```bash
 gti demo                 # loopback chat + file demo, no hardware needed
@@ -184,8 +223,8 @@ application-layer encryption**: a nearby BLE peer may be able to use your
 inference server and see prompts and responses. Use only in a trusted setting;
 do not rely on pairing as a security boundary. Requests are limited to 8 MiB;
 BLE is slow and large agent histories can take a long time to upload. The
-connection serves one peer and exits on disconnect; restart both commands to
-reconnect. Streaming has been tested over loopback, not yet on physical BLE.
+legacy commands serve one peer and exit on disconnect; restart both commands to
+reconnect. The TUI has its own automatic connection lifecycle.
 
 ## Library use
 
@@ -234,10 +273,9 @@ CI runs the suite and mypy on Python 3.9–3.13.
 
 ## Status
 
-Early bootstrap, v0.2.0. The connection layer, wire protocol, peer, services,
-and CLI are implemented and exercised over the in-memory loopback. LLM relay
-streaming and tool-call passthrough still need verification on physical BLE with
-an actual inference server and agent harness.
+Early bootstrap, v0.2.0. The original BLE POC has been used on macOS and
+Windows. The automatic single-peer TUI, simultaneous BLE roles and reconnect
+behavior are tested with simulated links and still need real-device validation.
 
 ## Known limitations
 

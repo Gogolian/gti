@@ -368,8 +368,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--version", action="version", version=f"%(prog)s {__version__}"
     )
-    sub = parser.add_subparsers(dest="command", required=True)
+    parser.add_argument("--config", type=Path, default=None,
+                        help="configuration file for the interactive TUI")
+    sub = parser.add_subparsers(dest="command")
 
+    tui = sub.add_parser("tui", help="run the automatic single-peer BLE interface")
+    tui.add_argument("--config", type=Path, default=argparse.SUPPRESS,
+                     help="configuration file for the interactive TUI")
     sub.add_parser("demo", help="run a loopback chat + file demo (no hardware needed)")
 
     scan = sub.add_parser("scan", help="list paired/nearby Bluetooth devices")
@@ -450,6 +455,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     logging.basicConfig(level=logging.WARNING, format="gti: %(message)s")
     parser = _build_parser()
     args = parser.parse_args(argv)
+
+    if args.command in (None, "tui"):
+        try:
+            from .tui import run_tui
+            run_tui(args.config)
+        except KeyboardInterrupt:
+            return 0
+        except (ImportError, OSError, RuntimeError, ValueError) as exc:
+            print(f"gti: {exc}", file=sys.stderr)
+            return 1
+        return 0
 
     if args.command == "demo":
         asyncio.run(_run_demo())

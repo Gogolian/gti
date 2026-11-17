@@ -40,6 +40,16 @@ class TestParser(unittest.TestCase):
             main(["--version"])
         self.assertEqual(cm.exception.code, 0)
 
+    def test_default_tui_and_config(self) -> None:
+        from unittest.mock import patch
+        with patch("gti.tui.run_tui") as run:
+            self.assertEqual(main([]), 0)
+            run.assert_called_with(None)
+            self.assertEqual(main(["--config", "a.json"]), 0)
+            run.assert_called_with(Path("a.json"))
+            self.assertEqual(main(["tui", "--config", "b.json"]), 0)
+            run.assert_called_with(Path("b.json"))
+
 
 class TestTransportPicker(unittest.IsolatedAsyncioTestCase):
     async def test_explicit(self) -> None:

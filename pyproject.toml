@@ -17,7 +17,7 @@ classifiers = [
     "Operating System :: OS Independent",
     "Topic :: Communications",
 ]
-dependencies = []
+dependencies = ["aiohttp>=3.9,<4", "textual>=0.47,<1"]
 
 [project.optional-dependencies]
 # Real Bluetooth Classic RFCOMM radios (platform libraries).  The core library,
